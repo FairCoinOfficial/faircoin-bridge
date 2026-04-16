@@ -89,6 +89,17 @@ mock.module("../src/models/audit-log.js", () => ({
   AuditLog: { create: async () => ({}) },
 }));
 
+mock.module("../src/models/buy-order.js", () => ({
+  BuyOrder: {
+    // No buy orders in the FAIR-signer test fixture. The signer's
+    // linkReleaseToBuyOrder helper calls findOneAndUpdate.lean(), so return
+    // a chainable that resolves to null without touching the mongo driver.
+    findOneAndUpdate: () => ({
+      lean: async (): Promise<null> => null,
+    }),
+  },
+}));
+
 mock.module("../src/lib/alert.js", () => ({
   alert: async () => undefined,
 }));

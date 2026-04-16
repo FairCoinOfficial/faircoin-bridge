@@ -16,6 +16,7 @@
     "@safe-global/api-kit": "latest",
     "@safe-global/protocol-kit": "latest",
     "@scure/bip32": "^1.7.0",
+    "@scure/bip39": "^1.6.0",
     "@uniswap/sdk-core": "^7.13.0",
     "@uniswap/v3-sdk": "^3.30.0",
     "bullmq": "^5",

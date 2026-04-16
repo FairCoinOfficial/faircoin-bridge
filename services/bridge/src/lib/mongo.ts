@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { config } from "../config.js";
+import { BuyOrder } from "../models/buy-order.js";
 import { Deposit } from "../models/deposit.js";
 import { Withdrawal } from "../models/withdrawal.js";
 import { logger } from "./logger.js";
@@ -93,7 +94,7 @@ async function dropLegacyDepositFairAddressUniqueIndex(): Promise<void> {
  * indexes).
  */
 async function ensureCriticalIndexes(): Promise<void> {
-  for (const model of [Deposit, Withdrawal]) {
+  for (const model of [Deposit, Withdrawal, BuyOrder]) {
     try {
       await model.createIndexes();
       logger.info(

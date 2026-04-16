@@ -3,12 +3,15 @@ import { getRedis } from "../lib/redis.js";
 import { logger } from "../lib/logger.js";
 import { alert } from "../lib/alert.js";
 import {
+  QUEUE_BUY,
   QUEUE_MINT,
   QUEUE_RELEASE,
+  type BuyJob,
   type MintJob,
   type ReleaseJob,
 } from "../queues.js";
 import { signMint, NonRetryableError } from "../signer/base.js";
+import { processBuy } from "../signer/buy.js";
 import { signRelease } from "../signer/fair.js";
 
 function wrapNonRetryable(err: unknown): unknown {
@@ -88,6 +91,47 @@ export function startReleaseWorker(signal: AbortSignal): Worker<ReleaseJob> {
     logger.error(
       { jobId: job?.id, err, attemptsMade: job?.attemptsMade },
       "release worker job failed",
+    );
+  });
+  signal.addEventListener(
+    "abort",
+    () => {
+      void worker.close();
+    },
+    { once: true },
+  );
+  return worker;
+}
+
+async function buyProcessor(job: Job<BuyJob>): Promise<void> {
+  logger.info(
+    { jobId: job.id, buyOrderId: job.data.buyOrderId },
+    "buy job processing",
+  );
+  try {
+    await processBuy(job.data.buyOrderId);
+  } catch (err: unknown) {
+    const wrapped = wrapNonRetryable(err);
+    if (wrapped instanceof UnrecoverableError) {
+      await alert("buy job failed permanently", {
+        jobId: job.id,
+        buyOrderId: job.data.buyOrderId,
+        reason: wrapped.message,
+      });
+    }
+    throw wrapped;
+  }
+}
+
+export function startBuyWorker(signal: AbortSignal): Worker<BuyJob> {
+  const worker = new Worker<BuyJob>(QUEUE_BUY, buyProcessor, {
+    connection: getRedis(),
+    concurrency: 1,
+  });
+  worker.on("failed", (job, err) => {
+    logger.error(
+      { jobId: job?.id, err, attemptsMade: job?.attemptsMade },
+      "buy worker job failed",
     );
   });
   signal.addEventListener(

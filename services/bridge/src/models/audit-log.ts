@@ -7,6 +7,7 @@ export const AUDIT_LOG_KINDS = [
   "UNPAUSE",
   "CAP_CHANGE",
   "ALERT",
+  "BUY_ORCHESTRATOR",
 ] as const;
 export type AuditLogKind = (typeof AUDIT_LOG_KINDS)[number];
 

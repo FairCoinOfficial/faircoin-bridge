@@ -7,6 +7,7 @@ import express, {
 import helmet from "helmet";
 import { config } from "../config.js";
 import { logger } from "../lib/logger.js";
+import { buyRouter } from "./buy.js";
 import { depositRouter } from "./deposit.js";
 import { errorHandler, notFoundHandler } from "./errors.js";
 import { healthRoute } from "./health.js";
@@ -47,6 +48,9 @@ export async function startApi(): Promise<http.Server> {
   app.use("/api/bridge/deposit", depositRouter);
   app.use("/api/bridge/withdrawal", withdrawalRouter);
   app.use("/api/bridge/reserves", reservesRouter);
+  // Buy-FAIR endpoints. Mounted at /api/buy/* per the FAIRWallet contract;
+  // bridge/* prefix would couple the consumer-facing path to internal routing.
+  app.use("/api/buy", buyRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

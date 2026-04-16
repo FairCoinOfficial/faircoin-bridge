@@ -67,6 +67,54 @@ const ConfigSchema = z.object({
   // Alerting
   DISCORD_WEBHOOK_URL: OptionalUrl,
 
+  // ─── Buy-FAIR flow ─────────────────────────────────────────────────────
+  // Bridge-controlled HD root (Ethereum cointype 60) used to allocate fresh
+  // payment addresses per buy order. Either an xprv or a mnemonic must be set
+  // to enable the Buy endpoints.
+  BUY_PAYMENT_HD_XPRV: OptionalString,
+  BUY_PAYMENT_HD_MNEMONIC: OptionalString,
+
+  // USDC contract on Base mainnet (token0 of the WFAIR/USDC pool).
+  // Override only on testnets.
+  USDC_BASE_ADDRESS: z
+    .string()
+    .regex(EthAddressRegex)
+    .default("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
+
+  // Live WFAIR/USDC v3 pool on Base mainnet (3000 fee tier).
+  WFAIR_USDC_POOL_ADDRESS: z
+    .string()
+    .regex(EthAddressRegex)
+    .default("0x9F4F694390c60b51e30461c785C1345A1545b7ca"),
+
+  // Uniswap v3 Quoter & SwapRouter02 on Base mainnet.
+  UNISWAP_V3_QUOTER: z
+    .string()
+    .regex(EthAddressRegex)
+    .default("0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a"),
+  UNISWAP_V3_SWAP_ROUTER: z
+    .string()
+    .regex(EthAddressRegex)
+    .default("0x2626664c2603336E57B271c5C0b26F421741e481"),
+
+  // Default slippage buffer (bps) added on top of pool quote when computing
+  // the user-facing payment amount. 200 bps = 2%.
+  BUY_SLIPPAGE_BUFFER_BPS: z.coerce.number().default(200),
+  // Bridge fee taken on each buy (bps). Independent of BRIDGE_FEE_BPS used
+  // for deposit/withdraw flows.
+  BUY_BRIDGE_FEE_BPS: z.coerce.number().default(100),
+  // Minimum FAIR per buy order (whole FAIR units).
+  BUY_MIN_FAIR: z.coerce.number().default(1),
+  // Maximum FAIR per buy order.
+  BUY_MAX_FAIR: z.coerce.number().default(1000),
+  // Lifetime of a quote in seconds.
+  BUY_QUOTE_TTL_SECONDS: z.coerce.number().default(900),
+
+  // Card-payment provider config. When unset, the API exposes the CARD
+  // option as "coming soon" and does not return a cardPaymentUrl.
+  MOONPAY_API_KEY: OptionalString,
+  TRANSAK_API_KEY: OptionalString,
+
   // API
   PORT: z.coerce.number().default(3100),
   API_CORS_ORIGIN: OptionalString,

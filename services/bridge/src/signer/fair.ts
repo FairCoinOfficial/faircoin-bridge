@@ -1,5 +1,6 @@
 import { config } from "../config.js";
 import { AuditLog } from "../models/audit-log.js";
+import { BuyOrder } from "../models/buy-order.js";
 import { Withdrawal, type WithdrawalDoc } from "../models/withdrawal.js";
 import { logger } from "../lib/logger.js";
 import { alert } from "../lib/alert.js";
@@ -226,11 +227,58 @@ export async function signRelease(job: ReleaseJob): Promise<void> {
       },
       "release broadcast",
     );
+    // If this release closes a Buy order (the burn tx was emitted by our
+    // buy orchestrator), thread the FAIR delivery txid back so the wallet's
+    // status poll flips DELIVERING → DELIVERED. Best-effort: failures here
+    // do not impact the withdrawal pipeline.
+    await linkReleaseToBuyOrder(job.baseBurnTxHash, txid).catch(
+      (err: unknown) => {
+        logger.warn(
+          { err, baseBurnTxHash: job.baseBurnTxHash },
+          "release: BuyOrder linking failed (non-blocking)",
+        );
+      },
+    );
   } catch (err: unknown) {
     logger.error(
       { err, withdrawalId: withdrawal._id.toString() },
       "release signing failed",
     );
     throw err;
+  }
+}
+
+/**
+ * If `baseBurnTxHash` corresponds to a BuyOrder we orchestrated, mark it as
+ * DELIVERED with the faircoind txid that just settled the FAIR side. The
+ * BuyOrder's `burnTxHash` is set by the buy orchestrator before bridgeBurn
+ * is broadcast, so the join is exact (no address-based fuzzy matching).
+ */
+async function linkReleaseToBuyOrder(
+  baseBurnTxHash: string,
+  fairReleaseTxid: string,
+): Promise<void> {
+  const updated = await BuyOrder.findOneAndUpdate(
+    {
+      burnTxHash: baseBurnTxHash.toLowerCase(),
+      status: { $in: ["BURNING", "DELIVERING"] },
+    },
+    {
+      $set: {
+        status: "DELIVERED",
+        releaseFairTxId: fairReleaseTxid,
+      },
+    },
+    { new: true },
+  ).lean<{ _id: { toString(): string } } | null>();
+  if (updated) {
+    logger.info(
+      {
+        buyOrderId: updated._id.toString(),
+        baseBurnTxHash,
+        fairReleaseTxid,
+      },
+      "buy: order delivered",
+    );
   }
 }

@@ -9,10 +9,16 @@ import { logger } from "./lib/logger.js";
 import { connectMongo } from "./lib/mongo.js";
 import { getRedis } from "./lib/redis.js";
 import { startApi } from "./api/server.js";
-import { createMintQueue, createReleaseQueue } from "./queues.js";
+import {
+  createBuyQueue,
+  createMintQueue,
+  createReleaseQueue,
+} from "./queues.js";
+import { startBuyWatcher } from "./workers/buy-watcher.js";
 import { startFairWatcher } from "./workers/fair-watcher.js";
 import { startBaseWatcher } from "./workers/base-watcher.js";
 import {
+  startBuyWorker,
   startMintWorker,
   startReleaseWorker,
 } from "./workers/orchestrator.js";
@@ -29,15 +35,18 @@ async function main(): Promise<void> {
 
   const mintQueue = createMintQueue();
   const releaseQueue = createReleaseQueue();
+  const buyQueue = createBuyQueue();
 
   const controller = new AbortController();
   const watcherPromises: Promise<void>[] = [
     startFairWatcher(controller.signal),
     startBaseWatcher(controller.signal),
     startReservesSnapshot(controller.signal),
+    startBuyWatcher(controller.signal),
   ];
   const mintWorker = startMintWorker(controller.signal);
   const releaseWorker = startReleaseWorker(controller.signal);
+  const buyWorker = startBuyWorker(controller.signal);
 
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
@@ -51,8 +60,16 @@ async function main(): Promise<void> {
     });
 
     await Promise.allSettled(watcherPromises);
-    await Promise.allSettled([mintWorker.close(), releaseWorker.close()]);
-    await Promise.allSettled([mintQueue.close(), releaseQueue.close()]);
+    await Promise.allSettled([
+      mintWorker.close(),
+      releaseWorker.close(),
+      buyWorker.close(),
+    ]);
+    await Promise.allSettled([
+      mintQueue.close(),
+      releaseQueue.close(),
+      buyQueue.close(),
+    ]);
 
     await mongoose.disconnect();
     await redis.quit();

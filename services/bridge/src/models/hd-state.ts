@@ -1,6 +1,6 @@
 import mongoose, { Schema, type InferSchemaType, type Model } from "mongoose";
 
-export const HD_STATE_IDS = ["fair_deposit"] as const;
+export const HD_STATE_IDS = ["fair_deposit", "base_buy_payment"] as const;
 export type HdStateId = (typeof HD_STATE_IDS)[number];
 
 const hdStateSchema = new Schema(

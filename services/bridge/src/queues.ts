@@ -3,6 +3,7 @@ import { getRedis } from "./lib/redis.js";
 
 export const QUEUE_MINT = "mint";
 export const QUEUE_RELEASE = "release";
+export const QUEUE_BUY = "buy";
 
 export interface MintJob {
   depositId: string;
@@ -20,6 +21,10 @@ export interface ReleaseJob {
   logIndex: number;
 }
 
+export interface BuyJob {
+  buyOrderId: string;
+}
+
 const defaultJobOptions: JobsOptions = {
   attempts: 5,
   backoff: { type: "exponential", delay: 10_000 },
@@ -29,6 +34,7 @@ const defaultJobOptions: JobsOptions = {
 
 let mintQueue: Queue<MintJob> | null = null;
 let releaseQueue: Queue<ReleaseJob> | null = null;
+let buyQueue: Queue<BuyJob> | null = null;
 
 export function createMintQueue(): Queue<MintJob> {
   if (mintQueue) return mintQueue;
@@ -46,4 +52,13 @@ export function createReleaseQueue(): Queue<ReleaseJob> {
     defaultJobOptions,
   });
   return releaseQueue;
+}
+
+export function createBuyQueue(): Queue<BuyJob> {
+  if (buyQueue) return buyQueue;
+  buyQueue = new Queue<BuyJob>(QUEUE_BUY, {
+    connection: getRedis(),
+    defaultJobOptions,
+  });
+  return buyQueue;
 }
