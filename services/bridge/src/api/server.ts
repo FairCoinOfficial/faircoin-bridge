@@ -29,9 +29,25 @@ export async function startApi(): Promise<http.Server> {
   app.use(helmet());
   app.use(express.json({ limit: "100kb" }));
 
+  // CORS — `API_CORS_ORIGIN` is a comma-separated allowlist (e.g.
+  // "https://fairco.in,https://oxy.so"). The browser-facing
+  // `Access-Control-Allow-Origin` header MUST be either `*` or a single
+  // origin string per the Fetch spec; comma-separated values are rejected by
+  // every modern browser. We echo back the request's `Origin` header only
+  // when it matches the allowlist, and add `Vary: Origin` so caches don't
+  // serve a response keyed on the wrong origin.
+  const allowedOrigins = (config.API_CORS_ORIGIN ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+  const allowedOriginSet = new Set<string>(allowedOrigins);
   app.use((req: Request, res: Response, next: NextFunction) => {
-    if (config.API_CORS_ORIGIN) {
-      res.setHeader("Access-Control-Allow-Origin", config.API_CORS_ORIGIN);
+    if (allowedOriginSet.size > 0) {
+      const requestOrigin = req.headers.origin;
+      if (typeof requestOrigin === "string" && allowedOriginSet.has(requestOrigin)) {
+        res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+        res.setHeader("Vary", "Origin");
+      }
       res.setHeader("Access-Control-Allow-Methods", "GET,POST");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     }
