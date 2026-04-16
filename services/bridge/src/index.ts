@@ -1,3 +1,7 @@
+// MUST be the first import: monkey-patches Express 4 so async route handlers
+// forward rejected Promises to the error middleware. Without it, an async
+// throw silently hangs the request until the client times out.
+import "express-async-errors";
 import "dotenv/config";
 import mongoose from "mongoose";
 import { config } from "./config.js";

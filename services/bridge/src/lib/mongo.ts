@@ -28,8 +28,55 @@ export async function connectMongo(): Promise<typeof mongoose> {
     serverSelectionTimeoutMS: 5000,
     autoIndex,
   });
+  await runStartupMigrations();
   connected = true;
   return mongoose;
+}
+
+/**
+ * One-shot startup migrations. Idempotent: each step checks whether the
+ * change is already in place before mutating. Safe to run on every boot.
+ */
+async function runStartupMigrations(): Promise<void> {
+  await dropLegacyDepositFairAddressUniqueIndex();
+}
+
+/**
+ * Originally `Deposit.fairAddress` had a unique index. Dropped because users
+ * naturally re-send to the same deposit address after a prior mint settles
+ * and we now create a fresh document per (fairTxid, fairVout). Old droplets
+ * will still have the legacy index — drop it on boot once.
+ */
+async function dropLegacyDepositFairAddressUniqueIndex(): Promise<void> {
+  const conn = mongoose.connection;
+  if (!conn.db) return;
+  const collection = conn.db.collection("deposits");
+  let indexes: Array<{ name?: string; unique?: boolean; key: Record<string, unknown> }>;
+  try {
+    indexes = await collection.indexes();
+  } catch (err: unknown) {
+    logger.warn({ err }, "could not list deposits indexes; skipping migration");
+    return;
+  }
+  const legacy = indexes.find(
+    (idx) =>
+      idx.unique === true &&
+      Object.keys(idx.key).length === 1 &&
+      idx.key.fairAddress === 1,
+  );
+  if (!legacy?.name) return;
+  try {
+    await collection.dropIndex(legacy.name);
+    logger.warn(
+      { indexName: legacy.name },
+      "dropped legacy unique index on deposits.fairAddress (re-use is now allowed)",
+    );
+  } catch (err: unknown) {
+    logger.error(
+      { err, indexName: legacy.name },
+      "failed to drop legacy unique index on deposits.fairAddress",
+    );
+  }
 }
 
 function redactUri(uri: string): string {

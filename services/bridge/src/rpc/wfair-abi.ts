@@ -104,11 +104,14 @@ export const wfairAbi = [
   {
     type: "event",
     name: "MintedForDeposit",
+    // Argument order MUST mirror WFAIR.sol: emit MintedForDeposit(faircoinTxid,
+    // vout, to, amount). Topic hashes are insensitive to names but viem encodes
+    // by the ABI's input order, so a mismatch silently breaks `getLogs` filters.
     inputs: [
+      { name: "faircoinTxid", type: "bytes32", indexed: true },
+      { name: "vout", type: "uint32", indexed: false },
       { name: "to", type: "address", indexed: true },
       { name: "amount", type: "uint256", indexed: false },
-      { name: "fairTxid", type: "bytes32", indexed: true },
-      { name: "fairVout", type: "uint32", indexed: false },
     ],
     anonymous: false,
   },

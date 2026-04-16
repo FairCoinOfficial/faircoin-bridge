@@ -16,7 +16,11 @@ export type DepositStatus = (typeof DEPOSIT_STATUSES)[number];
 const depositSchema = new Schema(
   {
     baseAddress: { type: String, required: true },
-    fairAddress: { type: String, required: true, unique: true },
+    // Not unique: users naturally re-send to the same deposit address after
+    // a prior mint settles. Each (fairTxid, fairVout) is its own deposit and
+    // gets its own document. Uniqueness lives on the (fairTxid, fairVout)
+    // compound index below.
+    fairAddress: { type: String, required: true },
     hdIndex: { type: Number, required: true },
     status: {
       type: String,
@@ -32,6 +36,12 @@ const depositSchema = new Schema(
     amountWei: { type: String, required: true, default: "0" },
     baseMintTxHash: { type: String, default: null },
     baseMintBlockNumber: { type: Number, default: null },
+    // Safe-mode only: persisted immediately after proposal creation so retries
+    // can reconcile against the Safe API instead of re-proposing.
+    safeTxHash: { type: String, default: null },
+    // Client IP of the /intent caller. Stored to enforce a per-IP outstanding
+    // AWAITING cap and throttle HD index exhaustion attempts.
+    clientIp: { type: String, default: null },
   },
   { timestamps: true, collection: "deposits" },
 );
@@ -41,7 +51,9 @@ depositSchema.index(
   { unique: true, sparse: true },
 );
 depositSchema.index({ baseAddress: 1, createdAt: -1 });
+depositSchema.index({ fairAddress: 1, createdAt: 1 });
 depositSchema.index({ status: 1, createdAt: -1 });
+depositSchema.index({ clientIp: 1, status: 1 });
 
 export type DepositDoc = InferSchemaType<typeof depositSchema> & {
   _id: mongoose.Types.ObjectId;

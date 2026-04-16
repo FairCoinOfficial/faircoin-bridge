@@ -21,6 +21,10 @@ const SATS_PER_FAIR = 100_000_000n;
 const SATS_TO_WEI = 10_000_000_000n; // 1e10, to move 8-dec sats to 18-dec wei
 const BPS_DENOM = 10_000n;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// See base-watcher.ORPHAN_WITHDRAWAL_AGE_MS — same reasoning, mirrored on
+// the deposit side: a CONFIRMED deposit older than this with no successful
+// mint enqueue is treated as an orphan and re-pushed to the queue.
+const ORPHAN_DEPOSIT_AGE_MS = 5 * 60 * 1000;
 
 function voutAddress(vout: TxVout): string | undefined {
   if (vout.scriptPubKey.addresses && vout.scriptPubKey.addresses.length > 0) {
@@ -100,27 +104,96 @@ async function sumDailyDepositSatsForAddress(
 }
 
 interface MatchedDeposit {
-  existing: DepositDoc | null;
+  /**
+   * The original "intent" deposit at this address (status AWAITING or
+   * DETECTED) if it still exists, otherwise null. When null we are looking
+   * at a user re-using a deposit address after a prior mint has settled.
+   */
+  pending: DepositDoc | null;
+  /** Earliest deposit at this address — source of truth for baseAddress + hdIndex. */
+  origin: DepositDoc | null;
   fairAddress: string;
   amountSats: bigint;
 }
 
 async function matchVout(
   addressSet: Set<string>,
-  tx: BlockTx,
+  _tx: BlockTx,
   vout: TxVout,
 ): Promise<MatchedDeposit | null> {
   const address = voutAddress(vout);
   if (!address) return null;
   if (!addressSet.has(address)) return null;
-  const existing = await Deposit.findOne({
+  // Find the still-open intent slot at this address, if any. There is at
+  // most one because /intent allocates a fresh address each call.
+  const pending = await Deposit.findOne({
     fairAddress: address,
+    status: { $in: ["AWAITING", "DETECTED"] },
   }).lean<DepositDoc | null>();
+  // For re-use: any prior deposit at this address gives us the canonical
+  // baseAddress + hdIndex to inherit.
+  const origin = pending
+    ? pending
+    : await Deposit.findOne({ fairAddress: address })
+        .sort({ createdAt: 1 })
+        .lean<DepositDoc | null>();
   return {
-    existing,
+    pending,
+    origin,
     fairAddress: address,
     amountSats: fairValueToSats(vout.value),
   };
+}
+
+/**
+ * Persist a terminal-state record for a vout we received but cannot or will
+ * not mint for (dust, cap exceeded, unsolicited, etc.). Either updates the
+ * pending intent slot if one exists, or creates a fresh document keyed on
+ * (fairTxid, fairVout) so the deposit is auditable and idempotent under
+ * watcher re-scan.
+ */
+async function persistTerminalDeposit(args: {
+  pending: DepositDoc | null;
+  baseAddress: string;
+  fairAddress: string;
+  hdIndex: number;
+  status: "FAILED";
+  fairTxid: string;
+  fairVout: number;
+  fairBlockHeight: number;
+  fairConfirmations: number;
+  amountSats: bigint;
+  amountWei: bigint;
+}): Promise<void> {
+  if (args.pending) {
+    await Deposit.updateOne(
+      { _id: args.pending._id },
+      {
+        $set: {
+          status: args.status,
+          fairTxid: args.fairTxid,
+          fairVout: args.fairVout,
+          fairBlockHeight: args.fairBlockHeight,
+          fairConfirmations: args.fairConfirmations,
+          amountSats: args.amountSats.toString(),
+          amountWei: args.amountWei.toString(),
+        },
+      },
+    );
+    return;
+  }
+  await Deposit.create({
+    baseAddress: args.baseAddress,
+    fairAddress: args.fairAddress,
+    hdIndex: args.hdIndex,
+    status: args.status,
+    fairTxid: args.fairTxid,
+    fairVout: args.fairVout,
+    fairBlockHeight: args.fairBlockHeight,
+    fairConfirmations: args.fairConfirmations,
+    amountSats: args.amountSats.toString(),
+    amountWei: args.amountWei.toString(),
+  });
 }
 
 async function processBlock(
@@ -156,18 +229,23 @@ async function processBlock(
       );
       const maxTvlWei = BigInt(config.MAX_TVL_FAIR) * SATS_PER_FAIR * SATS_TO_WEI;
 
-      const doc = match.existing;
-      const baseAddress = doc
-        ? doc.baseAddress
-        : null;
+      // Users naturally re-use deposit addresses; each (txid, vout) is a
+      // distinct deposit and gets its own document. `pending` is the open
+      // intent slot (may be null on re-use); `origin` is the earliest
+      // record for the address and the source of truth for baseAddress +
+      // hdIndex inheritance.
+      const origin = match.origin;
+      const baseAddress = origin?.baseAddress ?? null;
+      const hdIndex = origin?.hdIndex ?? -1;
 
       if (!baseAddress) {
-        // Unsolicited send to a bridge-derived address (no prior intent) —
-        // refuse to mint; operator must refund off-chain.
+        // Address is in our derivation set but no Deposit row exists at all
+        // — should be unreachable (allocateNextDepositAddress always writes
+        // a row), but guard anyway. Refund-required state.
         await Deposit.create({
           baseAddress: "0x0000000000000000000000000000000000000000",
           fairAddress: match.fairAddress,
-          hdIndex: doc?.hdIndex ?? -1,
+          hdIndex,
           status: "FAILED",
           fairTxid: tx.txid,
           fairVout: vout.n,
@@ -186,20 +264,19 @@ async function processBlock(
       }
 
       if (amountSats < minSats) {
-        await Deposit.updateOne(
-          { _id: doc?._id },
-          {
-            $set: {
-              status: "FAILED",
-              fairTxid: tx.txid,
-              fairVout: vout.n,
-              fairBlockHeight: height,
-              fairConfirmations: confirmations,
-              amountSats: amountSats.toString(),
-              amountWei: amountWei.toString(),
-            },
-          },
-        );
+        await persistTerminalDeposit({
+          pending: match.pending,
+          baseAddress,
+          fairAddress: match.fairAddress,
+          hdIndex,
+          status: "FAILED",
+          fairTxid: tx.txid,
+          fairVout: vout.n,
+          fairBlockHeight: height,
+          fairConfirmations: confirmations,
+          amountSats,
+          amountWei,
+        });
         await alert("deposit below minimum — dust, no mint", {
           fairAddress: match.fairAddress,
           amountSats: amountSats.toString(),
@@ -211,20 +288,19 @@ async function processBlock(
       // Per-address daily cap
       const dailySoFar = await sumDailyDepositSatsForAddress(baseAddress);
       if (dailySoFar + amountSats > perAddressCapSats) {
-        await Deposit.updateOne(
-          { _id: doc?._id },
-          {
-            $set: {
-              status: "FAILED",
-              fairTxid: tx.txid,
-              fairVout: vout.n,
-              fairBlockHeight: height,
-              fairConfirmations: confirmations,
-              amountSats: amountSats.toString(),
-              amountWei: amountWei.toString(),
-            },
-          },
-        );
+        await persistTerminalDeposit({
+          pending: match.pending,
+          baseAddress,
+          fairAddress: match.fairAddress,
+          hdIndex,
+          status: "FAILED",
+          fairTxid: tx.txid,
+          fairVout: vout.n,
+          fairBlockHeight: height,
+          fairConfirmations: confirmations,
+          amountSats,
+          amountWei,
+        });
         await alert("deposit exceeds per-address daily cap", {
           baseAddress,
           dailySoFar: dailySoFar.toString(),
@@ -239,20 +315,19 @@ async function processBlock(
         sumInFlightWei(),
       ]);
       if (supply + inFlight + postFeeWei > maxTvlWei) {
-        await Deposit.updateOne(
-          { _id: doc?._id },
-          {
-            $set: {
-              status: "FAILED",
-              fairTxid: tx.txid,
-              fairVout: vout.n,
-              fairBlockHeight: height,
-              fairConfirmations: confirmations,
-              amountSats: amountSats.toString(),
-              amountWei: amountWei.toString(),
-            },
-          },
-        );
+        await persistTerminalDeposit({
+          pending: match.pending,
+          baseAddress,
+          fairAddress: match.fairAddress,
+          hdIndex,
+          status: "FAILED",
+          fairTxid: tx.txid,
+          fairVout: vout.n,
+          fairBlockHeight: height,
+          fairConfirmations: confirmations,
+          amountSats,
+          amountWei,
+        });
         await alert("tvl cap exceeded — deposit failed, manual refund", {
           baseAddress,
           supply: supply.toString(),
@@ -263,11 +338,47 @@ async function processBlock(
         continue;
       }
 
-      // Happy path: CONFIRMED + enqueue mint
-      const updated = await Deposit.findOneAndUpdate(
-        { _id: doc?._id, status: { $in: ["AWAITING", "DETECTED"] } },
-        {
-          $set: {
+      // Happy path: confirm a deposit document.
+      // - If a pending intent exists, transition it AWAITING/DETECTED →
+      //   CONFIRMED in place (preserves the user's existing deposit id).
+      // - Otherwise we're looking at address re-use; create a fresh doc
+      //   inheriting baseAddress + hdIndex from origin and starting in
+      //   CONFIRMED. The (fairTxid, fairVout) unique index makes the
+      //   create idempotent under retry.
+      let confirmedId: string;
+      if (match.pending) {
+        const updated = await Deposit.findOneAndUpdate(
+          {
+            _id: match.pending._id,
+            status: { $in: ["AWAITING", "DETECTED"] },
+          },
+          {
+            $set: {
+              status: "CONFIRMED",
+              fairTxid: tx.txid,
+              fairVout: vout.n,
+              fairBlockHeight: height,
+              fairConfirmations: confirmations,
+              amountSats: amountSats.toString(),
+              amountWei: postFeeWei.toString(),
+            },
+          },
+          { new: true },
+        ).lean<DepositDoc | null>();
+        if (!updated) {
+          logger.debug(
+            { fairTxid: tx.txid, vout: vout.n },
+            "deposit no longer eligible for confirm (race)",
+          );
+          continue;
+        }
+        confirmedId = updated._id.toString();
+      } else {
+        try {
+          const created = await Deposit.create({
+            baseAddress,
+            fairAddress: match.fairAddress,
+            hdIndex,
             status: "CONFIRMED",
             fairTxid: tx.txid,
             fairVout: vout.n,
@@ -275,23 +386,27 @@ async function processBlock(
             fairConfirmations: confirmations,
             amountSats: amountSats.toString(),
             amountWei: postFeeWei.toString(),
-          },
-        },
-        { new: true },
-      ).lean<DepositDoc | null>();
-
-      if (!updated) {
-        logger.debug(
-          { fairTxid: tx.txid, vout: vout.n },
-          "deposit no longer eligible for confirm (race)",
-        );
-        continue;
+          });
+          confirmedId = created._id.toString();
+        } catch (err: unknown) {
+          // E11000 duplicate key on (fairTxid, fairVout) — concurrent
+          // watcher already created the row; treat as a no-op.
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes("E11000")) {
+            logger.debug(
+              { fairTxid: tx.txid, vout: vout.n },
+              "concurrent watcher created the re-use deposit row",
+            );
+            continue;
+          }
+          throw err;
+        }
       }
 
       await queue.add(
         "mint",
         {
-          depositId: updated._id.toString(),
+          depositId: confirmedId,
           baseAddress: getAddress(baseAddress),
           amountWei: postFeeWei.toString(),
           fairTxid: tx.txid,
@@ -302,15 +417,58 @@ async function processBlock(
 
       logger.info(
         {
-          depositId: updated._id.toString(),
+          depositId: confirmedId,
           fairTxid: tx.txid,
           vout: vout.n,
           amountSats: amountSats.toString(),
           postFeeWei: postFeeWei.toString(),
+          reused: !match.pending,
         },
         "deposit confirmed — mint enqueued",
       );
     }
+  }
+}
+
+/**
+ * Re-enqueue any CONFIRMED deposits whose mint job never made it into Redis.
+ * Same orphan pattern as the withdrawal-side reconciler in base-watcher.
+ */
+async function reconcileOrphanDeposits(): Promise<void> {
+  const cutoff = new Date(Date.now() - ORPHAN_DEPOSIT_AGE_MS);
+  const orphans = await Deposit.find({
+    status: "CONFIRMED",
+    createdAt: { $lt: cutoff },
+    fairTxid: { $ne: null },
+    fairVout: { $ne: null },
+  })
+    .limit(50)
+    .lean<DepositDoc[]>();
+  if (orphans.length === 0) return;
+  const queue = createMintQueue();
+  for (const orphan of orphans) {
+    const fairTxid = orphan.fairTxid;
+    const fairVout = orphan.fairVout;
+    if (!fairTxid || fairVout === null || fairVout === undefined) continue;
+    await queue.add(
+      "mint",
+      {
+        depositId: orphan._id.toString(),
+        baseAddress: getAddress(orphan.baseAddress),
+        amountWei: orphan.amountWei,
+        fairTxid,
+        fairVout,
+      },
+      { jobId: `mint:${fairTxid}:${fairVout}` },
+    );
+    logger.warn(
+      {
+        depositId: orphan._id.toString(),
+        fairTxid,
+        fairVout,
+      },
+      "orphan deposit re-enqueued",
+    );
   }
 }
 
@@ -320,6 +478,7 @@ export async function startFairWatcher(signal: AbortSignal): Promise<void> {
 
   while (!signal.aborted) {
     try {
+      await reconcileOrphanDeposits();
       const tip = await getTipHeight();
       const cursor = await EventCursor.findOneAndUpdate(
         { _id: "faircoin" },

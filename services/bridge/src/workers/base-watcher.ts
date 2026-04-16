@@ -21,6 +21,11 @@ const INITIAL_BACKFILL_BLOCKS = 10_000n;
 const SATS_TO_WEI = 10_000_000_000n; // 1e10
 const BPS_DENOM = 10_000n;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Window after which a CONFIRMED withdrawal with no enqueued release is
+// considered orphaned (queue.add succeeded but Redis dropped the job, or
+// crashed between create + enqueue). Five minutes is well above any normal
+// processing latency and short enough that user impact is bounded.
+const ORPHAN_WITHDRAWAL_AGE_MS = 5 * 60 * 1000;
 
 const bridgeBurnEvent = getAbiItem({
   abi: wfairAbi,
@@ -201,11 +206,59 @@ async function processLog(log: Log): Promise<void> {
   );
 }
 
+/**
+ * Re-enqueue any CONFIRMED withdrawals whose mint job never made it into
+ * Redis. The original create+enqueue is two steps; if queue.add throws
+ * after Withdrawal.create succeeds the row is orphaned and the per-burn-tx
+ * idempotency check (baseBurnTxHash + logIndex) prevents the next watcher
+ * tick from creating a fresh job for it. This reconciler closes that gap.
+ */
+async function reconcileOrphanWithdrawals(): Promise<void> {
+  const cutoff = new Date(Date.now() - ORPHAN_WITHDRAWAL_AGE_MS);
+  const orphans = await Withdrawal.find({
+    status: "CONFIRMED",
+    createdAt: { $lt: cutoff },
+  })
+    .limit(50)
+    .lean<
+      Array<{
+        _id: { toString(): string };
+        baseBurnTxHash: string;
+        logIndex: number;
+        destinationFairAddress: string;
+        amountSats: string;
+      }>
+    >();
+  if (orphans.length === 0) return;
+  const queue = createReleaseQueue();
+  for (const orphan of orphans) {
+    await queue.add(
+      "release",
+      {
+        withdrawalId: orphan._id.toString(),
+        destinationFairAddress: orphan.destinationFairAddress,
+        amountSats: orphan.amountSats,
+        baseBurnTxHash: orphan.baseBurnTxHash,
+        logIndex: orphan.logIndex,
+      },
+      { jobId: `release:${orphan.baseBurnTxHash}:${orphan.logIndex}` },
+    );
+    logger.warn(
+      {
+        withdrawalId: orphan._id.toString(),
+        baseBurnTxHash: orphan.baseBurnTxHash,
+      },
+      "orphan withdrawal re-enqueued",
+    );
+  }
+}
+
 export async function startBaseWatcher(signal: AbortSignal): Promise<void> {
   logger.info("base-watcher starting");
 
   while (!signal.aborted) {
     try {
+      await reconcileOrphanWithdrawals();
       const tip = await basePublic.getBlockNumber();
       const cursor = await EventCursor.findOneAndUpdate(
         { _id: "base" },
