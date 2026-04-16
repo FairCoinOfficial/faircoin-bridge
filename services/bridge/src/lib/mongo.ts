@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 import { config } from "../config.js";
+import { Deposit } from "../models/deposit.js";
+import { Withdrawal } from "../models/withdrawal.js";
 import { logger } from "./logger.js";
 
 let connected = false;
@@ -8,11 +10,6 @@ export async function connectMongo(): Promise<typeof mongoose> {
   if (connected) return mongoose;
 
   const autoIndex = config.NODE_ENV !== "production";
-  if (!autoIndex) {
-    logger.info(
-      "mongo autoIndex disabled in production; run the index creation script to ensure indexes exist",
-    );
-  }
 
   mongoose.connection.on("connected", () => {
     logger.info({ uri: redactUri(config.MONGO_URI) }, "mongo connected");
@@ -36,9 +33,15 @@ export async function connectMongo(): Promise<typeof mongoose> {
 /**
  * One-shot startup migrations. Idempotent: each step checks whether the
  * change is already in place before mutating. Safe to run on every boot.
+ *
+ * Order matters: drop legacy indexes BEFORE creating new ones, so that a
+ * later index that overlaps with a deprecated one (e.g. the new compound
+ * index on fairAddress + createdAt vs. the old unique single-field) gets
+ * a clean slate to build into.
  */
 async function runStartupMigrations(): Promise<void> {
   await dropLegacyDepositFairAddressUniqueIndex();
+  await ensureCriticalIndexes();
 }
 
 /**
@@ -76,6 +79,33 @@ async function dropLegacyDepositFairAddressUniqueIndex(): Promise<void> {
       { err, indexName: legacy.name },
       "failed to drop legacy unique index on deposits.fairAddress",
     );
+  }
+}
+
+/**
+ * Ensure schema-defined indexes exist. In production `autoIndex: false`
+ * stops Mongoose from doing this on first model use; we call createIndexes
+ * explicitly so the unique `(fairTxid, fairVout)` and `(baseBurnTxHash,
+ * logIndex)` indexes — which underpin the idempotency invariants — are
+ * present before any write happens. createIndexes is additive: existing
+ * matching indexes are reused, mismatched ones are NOT dropped (use
+ * syncIndexes for that, deliberately avoided here to preserve hand-tuned
+ * indexes).
+ */
+async function ensureCriticalIndexes(): Promise<void> {
+  for (const model of [Deposit, Withdrawal]) {
+    try {
+      await model.createIndexes();
+      logger.info(
+        { collection: model.collection.collectionName },
+        "ensured indexes",
+      );
+    } catch (err: unknown) {
+      logger.error(
+        { err, collection: model.collection.collectionName },
+        "failed to ensure indexes (custodial integrity at risk)",
+      );
+    }
   }
 }
 
