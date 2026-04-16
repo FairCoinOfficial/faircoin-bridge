@@ -10,8 +10,10 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 /// @title WFAIR - Wrapped FairCoin on Base
 /// @notice 1:1 wrapped FairCoin ERC-20 issued by a custodial bridge.
 /// @dev Mint authority is intended to be a 2-of-3 Gnosis Safe on Base.
-///      Deployer holds no privileges; all roles are granted to the `admin`
-///      address (the Safe) in the constructor.
+///      Deployer holds no privileges; admin roles are granted to the `admin`
+///      address (the Safe) and MINTER_ROLE is additionally granted to the
+///      optional `minter` address (the bridge EOA) in the constructor so
+///      direct-EOA mint mode works without a post-deploy role grant.
 contract WFAIR is ERC20, ERC20Burnable, ERC20Permit, AccessControl, Pausable {
     /// @notice Role that authorizes minting of new WFAIR tokens.
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
@@ -40,15 +42,27 @@ contract WFAIR is ERC20, ERC20Burnable, ERC20Permit, AccessControl, Pausable {
     /// @param faircoinAddress Raw FairCoin destination address bytes (base58).
     event BridgeBurn(address indexed from, uint256 amount, bytes faircoinAddress);
 
-    /// @notice Deploys the WFAIR token and assigns every role to `admin`.
+    /// @notice Deploys the WFAIR token and assigns roles to `admin` and
+    ///         optionally to `minter`.
     /// @dev The deployer (`msg.sender`) is intentionally not granted any
-    ///      privileges. `admin` is expected to be the bridge Safe.
+    ///      privileges. `admin` is expected to be the bridge Safe. `minter`
+    ///      is expected to be the bridge EOA used when the bridge runs in
+    ///      `direct_eoa` mint-authority mode; passing `address(0)` skips the
+    ///      extra MINTER_ROLE grant (Safe-only mode).
     /// @param admin Address that receives DEFAULT_ADMIN_ROLE, MINTER_ROLE,
-    ///              and PAUSER_ROLE.
-    constructor(address admin) ERC20("Wrapped FairCoin", "WFAIR") ERC20Permit("Wrapped FairCoin") {
+    ///              and PAUSER_ROLE. Must be non-zero.
+    /// @param minter Additional address that receives MINTER_ROLE. Set to
+    ///               `address(0)` to leave the Safe as the sole minter.
+    constructor(address admin, address minter) ERC20("Wrapped FairCoin", "WFAIR") ERC20Permit("Wrapped FairCoin") {
+        require(admin != address(0), "WFAIR: admin is zero");
+
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(MINTER_ROLE, admin);
         _grantRole(PAUSER_ROLE, admin);
+
+        if (minter != address(0)) {
+            _grantRole(MINTER_ROLE, minter);
+        }
     }
 
     /// @notice Mints WFAIR to `to`. Restricted to MINTER_ROLE.

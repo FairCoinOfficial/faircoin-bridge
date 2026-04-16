@@ -42,12 +42,13 @@ contract WFAIRTest is Test {
         pauser = makeAddr("pauser");
         attacker = makeAddr("attacker");
 
-        wfair = new WFAIR(safe);
+        // MINTER_ROLE is granted to `minter` directly in the constructor,
+        // matching the bridge's `direct_eoa` mint-authority mode. The Safe
+        // still holds MINTER_ROLE and can rotate the minter at any time.
+        wfair = new WFAIR(safe, minter);
 
-        vm.startPrank(safe);
-        wfair.grantRole(MINTER_ROLE, minter);
+        vm.prank(safe);
         wfair.grantRole(PAUSER_ROLE, pauser);
-        vm.stopPrank();
     }
 
     // ---------- metadata ----------
@@ -71,6 +72,28 @@ contract WFAIRTest is Test {
         assertTrue(wfair.hasRole(DEFAULT_ADMIN_ROLE, safe));
         assertTrue(wfair.hasRole(MINTER_ROLE, safe));
         assertTrue(wfair.hasRole(PAUSER_ROLE, safe));
+    }
+
+    function test_MinterAddressGrantedInConstructor() public view {
+        assertTrue(wfair.hasRole(MINTER_ROLE, minter));
+        // Minter EOA must not be promoted to admin or pauser implicitly.
+        assertFalse(wfair.hasRole(DEFAULT_ADMIN_ROLE, minter));
+        assertFalse(wfair.hasRole(PAUSER_ROLE, minter));
+    }
+
+    function test_ConstructorRevertsWhenAdminZero() public {
+        vm.expectRevert(bytes("WFAIR: admin is zero"));
+        new WFAIR(address(0), minter);
+    }
+
+    function test_ConstructorAllowsZeroMinter() public {
+        WFAIR solo = new WFAIR(safe, address(0));
+
+        assertTrue(solo.hasRole(DEFAULT_ADMIN_ROLE, safe));
+        assertTrue(solo.hasRole(MINTER_ROLE, safe));
+        assertTrue(solo.hasRole(PAUSER_ROLE, safe));
+        // The zero address is not a role-bearer: Safe is the sole minter.
+        assertFalse(solo.hasRole(MINTER_ROLE, address(0)));
     }
 
     // ---------- minting ----------
