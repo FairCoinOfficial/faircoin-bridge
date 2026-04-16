@@ -11,6 +11,36 @@
       "verified": true,
       "safe": null,
       "note": "Solo EOA mode (no Safe). TVL-capped launch. Roles can be transferred to a Safe later via grantRole + renounceRole."
+    },
+    "uniswap_pool": {
+      "pool_address": "0x9F4F694390c60b51e30461c785C1345A1545b7ca",
+      "position_token_id": "4978940",
+      "fee_tier": 3000,
+      "tick_lower": 269340,
+      "tick_upper": 283260,
+      "init_sqrt_price_x96": "113183089306091910847919929051428571",
+      "init_price_usd": 0.49,
+      "range_low_usd": 0.50,
+      "range_high_usd": 2.00,
+      "seeded_amount_wfair": 5000,
+      "seeded_amount_usdc": 0,
+      "liquidity": "7049760544499410",
+      "seeded_at": "2026-04-16",
+      "model": "single-sided WFAIR — buyers' USDC accumulates in position as price moves up through the range",
+      "backing": "Founder-funded. Admin EOA holds the corresponding 5000 FAIR personally as off-chain reserve.",
+      "token0_usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "token1_wfair": "0xF2853CedDF47A05Fee0B4b24DFf2925d59737fb3",
+      "nonfungible_position_manager": "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1",
+      "factory": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+      "uniswap_position_url": "https://app.uniswap.org/positions/v3/base/4978940",
+      "uniswap_swap_url": "https://app.uniswap.org/swap?outputCurrency=0xF2853CedDF47A05Fee0B4b24DFf2925d59737fb3&chain=base",
+      "basescan_pool_url": "https://basescan.org/address/0x9F4F694390c60b51e30461c785C1345A1545b7ca",
+      "txs": {
+        "wfair_mint": "0xebb96416099c241d8dd0c0475bacc67b15fc13518b0e534462f9aed287551767",
+        "approve_npm": "0x46b6e2e688e4f2c5830f4b5c0cef3d6055f5c93a1681d19031aa8317086636ef",
+        "create_pool": "0x81773f1b986005f3aa2e37ab708dbe12f77635edd553257726025802fcf2f84d",
+        "mint_position": "0xd961eacde21bfe854f9ef5239a70bfc541426cee19b462223024672ae121e031"
+      }
     }
   }
 }
