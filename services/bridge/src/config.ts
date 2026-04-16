@@ -42,6 +42,16 @@ const ConfigSchema = z.object({
   FAIR_BRIDGE_XPUB: OptionalString,
   FAIR_DEPOSIT_DERIVATION_PATH: z.string().default("m/44'/119'/0'/0"),
 
+  // Signing modes
+  // direct_eoa: bridge EOA holds MINTER_ROLE on WFAIR and mints directly (fast, requires EOA role grant)
+  // safe_proposal: worker proposes a Safe tx; 2nd signer + execution happen out-of-band via Safe UI
+  MINT_AUTH_MODE: z.enum(["direct_eoa", "safe_proposal"]).default("direct_eoa"),
+  // node_wallet: use faircoind listunspent/sendtoaddress (fastest to ship, requires configured node wallet)
+  // local_hd: build + sign txs locally from FAIR_HOT_WALLET_XPRV (phase 2)
+  FAIR_HOT_WALLET_MODE: z
+    .enum(["node_wallet", "local_hd"])
+    .default("node_wallet"),
+
   // Storage
   MONGO_URI: z.string().url(),
   REDIS_URL: z.string().url(),

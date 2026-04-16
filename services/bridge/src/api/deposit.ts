@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import mongoose from "mongoose";
 import { z } from "zod";
+import { allocateNextDepositAddress } from "../hd/derive.js";
 import { Deposit, type DepositDoc } from "../models/deposit.js";
 import { validate } from "./validate.js";
 
@@ -25,10 +26,26 @@ export const depositRouter: Router = Router();
 depositRouter.post(
   "/intent",
   validate(DepositIntentBody, "body"),
-  (_req: Request, res: Response) => {
-    // HD derivation + deposit address allocation lands in a follow-up PR
-    // once the FAIR RPC + HD modules are available.
-    res.status(501).json({ error: "not_implemented" });
+  async (req: Request, res: Response) => {
+    const parsed = req.parsed as z.infer<typeof DepositIntentBody>;
+    const baseAddress = parsed.baseAddress.toLowerCase();
+    const { index, address } = await allocateNextDepositAddress();
+    const deposit = await Deposit.create({
+      baseAddress,
+      fairAddress: address,
+      hdIndex: index,
+      status: "AWAITING",
+      amountSats: "0",
+      amountWei: "0",
+      fairConfirmations: 0,
+    });
+    res.status(201).json({
+      id: deposit._id.toString(),
+      baseAddress,
+      fairAddress: address,
+      hdIndex: index,
+      status: deposit.status,
+    });
   },
 );
 

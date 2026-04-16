@@ -11,8 +11,11 @@
     "build": "bun build src/index.ts --outdir dist --target node"
   },
   "dependencies": {
+    "@fairco.in/core": "^0.1.0",
+    "@fairco.in/rpc-client": "^0.1.0",
     "@safe-global/api-kit": "latest",
     "@safe-global/protocol-kit": "latest",
+    "@scure/bip32": "^1.7.0",
     "bullmq": "^5",
     "dotenv": "^16",
     "express": "^4",
