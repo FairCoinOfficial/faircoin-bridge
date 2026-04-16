@@ -7,7 +7,7 @@
     "patch": 0
   },
   "keywords": ["faircoin", "wfair", "wrapped", "base", "bridge"],
-  "logoURI": "https://fairco.in/logo.png",
+  "logoURI": "https://fairco.in/logo.jpg",
   "tokens": [
     {
       "chainId": 8453,
@@ -15,7 +15,7 @@
       "symbol": "WFAIR",
       "name": "Wrapped FairCoin",
       "decimals": 18,
-      "logoURI": "https://fairco.in/logo.png",
+      "logoURI": "https://fairco.in/logo.jpg",
       "tags": ["wrapped", "bridge"]
     }
   ],
