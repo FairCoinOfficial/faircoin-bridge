@@ -1,0 +1,21 @@
+{
+  "name": "faircoin-bridge",
+  "private": true,
+  "workspaces": [
+    "services/*"
+  ],
+  "scripts": {
+    "build": "bun run --filter '*' build",
+    "dev": "bun run --filter '@fairco.in/bridge-service' dev",
+    "test": "bun run --filter '@fairco.in/bridge-service' test",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "bun run --filter '*' lint"
+  },
+  "engines": {
+    "bun": ">=1.2"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.8"
+  }
+}
