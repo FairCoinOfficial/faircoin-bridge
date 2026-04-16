@@ -7,6 +7,7 @@ import express, {
 import helmet from "helmet";
 import { config } from "../config.js";
 import { logger } from "../lib/logger.js";
+import { adminRouter } from "./admin.js";
 import { buyRouter } from "./buy.js";
 import { depositRouter } from "./deposit.js";
 import { errorHandler, notFoundHandler } from "./errors.js";
@@ -67,6 +68,9 @@ export async function startApi(): Promise<http.Server> {
   // Buy-FAIR endpoints. Mounted at /api/buy/* per the FAIRWallet contract;
   // bridge/* prefix would couple the consumer-facing path to internal routing.
   app.use("/api/buy", buyRouter);
+  // Admin endpoints (buyback trigger / status). The router self-disables
+  // when ADMIN_API_TOKEN is unset, returning 404 on every request.
+  app.use("/api/admin", adminRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

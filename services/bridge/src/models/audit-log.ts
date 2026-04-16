@@ -8,6 +8,8 @@ export const AUDIT_LOG_KINDS = [
   "CAP_CHANGE",
   "ALERT",
   "BUY_ORCHESTRATOR",
+  "BUYBACK_CYCLE",
+  "MASTERNODE_REWARD_CYCLE",
 ] as const;
 export type AuditLogKind = (typeof AUDIT_LOG_KINDS)[number];
 

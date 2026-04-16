@@ -15,8 +15,10 @@ import {
   createReleaseQueue,
 } from "./queues.js";
 import { startBuyWatcher } from "./workers/buy-watcher.js";
+import { startBuybackWorker } from "./workers/buyback-worker.js";
 import { startFairWatcher } from "./workers/fair-watcher.js";
 import { startBaseWatcher } from "./workers/base-watcher.js";
+import { startMasternodeRewardWorker } from "./workers/masternode-reward-worker.js";
 import {
   startBuyWorker,
   startMintWorker,
@@ -43,6 +45,8 @@ async function main(): Promise<void> {
     startBaseWatcher(controller.signal),
     startReservesSnapshot(controller.signal),
     startBuyWatcher(controller.signal),
+    startBuybackWorker(controller.signal),
+    startMasternodeRewardWorker(controller.signal),
   ];
   const mintWorker = startMintWorker(controller.signal);
   const releaseWorker = startReleaseWorker(controller.signal);

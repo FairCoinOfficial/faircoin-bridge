@@ -3,6 +3,12 @@ import { logger } from "./lib/logger.js";
 
 const EthAddressRegex = /^0x[0-9a-fA-F]{40}$/;
 const HexPrivKeyRegex = /^0x[0-9a-fA-F]{64}$/;
+// FairCoin Base58Check addresses on mainnet start with 'F' (PUBKEY_ADDRESS
+// = 35) or '3' (SCRIPT_ADDRESS = 16); testnet uses 'T' (65) or '5' (12). The
+// buy-back/burn worker accepts any of these as a destination since all are
+// valid funds-receivable address types. Final validation happens via
+// `validateaddress` against the configured faircoind node before sending.
+const FairAddressRegex = /^[FT35][a-km-zA-HJ-NP-Z1-9]{20,63}$/;
 
 const OptionalString = z
   .string()
@@ -17,7 +23,7 @@ const OptionalUrl = z
     message: "must be a URL or empty",
   });
 
-const ConfigSchema = z.object({
+const ConfigSchemaBase = z.object({
   // FairCoin RPC
   FAIR_NETWORK: z.enum(["testnet", "mainnet"]),
   FAIR_RPC_URL: z.string().url(),
@@ -115,6 +121,71 @@ const ConfigSchema = z.object({
   MOONPAY_API_KEY: OptionalString,
   TRANSAK_API_KEY: OptionalString,
 
+  // ─── Buy-back / treasury distribution ─────────────────────────────────
+  // Periodic worker that drains accumulated USDC fees from the bridge admin
+  // EOA into WFAIR via Uniswap, then bridgeBurns the proceeds split across
+  // three FAIR destinations. See src/workers/buyback-worker.ts.
+  BUYBACK_ENABLED: z
+    .union([z.literal("true"), z.literal("false"), z.literal("")])
+    .default("false")
+    .transform((v) => v === "true"),
+  BUYBACK_THRESHOLD_USDC: z.coerce.number().min(1).default(100),
+  BUYBACK_INTERVAL_MS: z.coerce.number().int().min(60_000).default(3_600_000),
+  BUYBACK_BURN_BPS: z.coerce.number().int().min(0).max(10_000).default(5_000),
+  BUYBACK_TREASURY_BPS: z.coerce.number().int().min(0).max(10_000).default(3_000),
+  BUYBACK_MASTERNODE_BPS: z.coerce.number().int().min(0).max(10_000).default(2_000),
+  // FAIR addresses are only structurally validated here; live validation
+  // against faircoind happens on worker boot and on each cycle.
+  FAIR_BURN_ADDRESS: z
+    .string()
+    .regex(FairAddressRegex)
+    .optional()
+    .or(z.literal("").transform(() => undefined)),
+  FAIR_TREASURY_ADDRESS: z
+    .string()
+    .regex(FairAddressRegex)
+    .optional()
+    .or(z.literal("").transform(() => undefined)),
+  FAIR_MASTERNODE_REWARD_ADDRESS: z
+    .string()
+    .regex(FairAddressRegex)
+    .optional()
+    .or(z.literal("").transform(() => undefined)),
+
+  // ─── Masternode reward booster (task #29) ─────────────────────────────
+  // Periodic worker that drains FAIR_MASTERNODE_REWARD_ADDRESS pro-rata
+  // across all ENABLED FairCoin masternodes via faircoind sendtoaddress. The
+  // funding side lives in the buy-back worker (BUYBACK_MASTERNODE_BPS slice).
+  // Disabled by default; must be explicitly switched on by the operator.
+  MASTERNODE_REWARDS_ENABLED: z
+    .union([z.literal("true"), z.literal("false"), z.literal("")])
+    .default("false")
+    .transform((v) => v === "true"),
+  // Cadence between distribution attempts. Default: weekly (1000 * 60 * 60 *
+  // 24 * 7). Minimum 1 minute to avoid stampeding the wallet on misconfig.
+  MASTERNODE_REWARDS_INTERVAL_MS: z
+    .coerce.number()
+    .int()
+    .min(60_000)
+    .default(604_800_000),
+  // Below this many FAIR (whole units) sitting in the reward pool, skip the
+  // cycle and try again next tick. Avoids dust-only payouts that get eaten by
+  // the per-payout tx fee.
+  MASTERNODE_REWARDS_MIN_BALANCE_FAIR: z.coerce.number().min(0).default(10),
+  // Reserved on-chain fee per outbound sendtoaddress. Subtracted (× #payouts)
+  // from the distributable balance so the wallet is never asked to spend more
+  // than it has after fees. faircoind currently relies on its `mintxfee`/
+  // `paytxfee` config knobs; this value is a budget cap, not a wire-level
+  // override.
+  MASTERNODE_REWARDS_PAYOUT_FEE_FAIR: z.coerce
+    .number()
+    .min(0)
+    .default(0.001),
+
+  // Bearer token for the admin API (buyback trigger / status). Leave blank
+  // to disable the admin router entirely.
+  ADMIN_API_TOKEN: OptionalString,
+
   // API
   PORT: z.coerce.number().default(3100),
   API_CORS_ORIGIN: OptionalString,
@@ -126,6 +197,61 @@ const ConfigSchema = z.object({
   LOG_LEVEL: z
     .enum(["trace", "debug", "info", "warn", "error", "fatal"])
     .default("info"),
+});
+
+const ConfigSchema = ConfigSchemaBase.superRefine((cfg, ctx) => {
+  // Enforce BPS sum exactly == 10000 so the buy-back distribution is total.
+  // Allowing slack would silently leak WFAIR back into the bridge EOA across
+  // cycles, breaking the deflationary invariant.
+  const bpsSum =
+    cfg.BUYBACK_BURN_BPS +
+    cfg.BUYBACK_TREASURY_BPS +
+    cfg.BUYBACK_MASTERNODE_BPS;
+  if (bpsSum !== 10_000) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [
+        "BUYBACK_BURN_BPS",
+        "BUYBACK_TREASURY_BPS",
+        "BUYBACK_MASTERNODE_BPS",
+      ],
+      message: `BUYBACK_*_BPS must sum to 10000, got ${String(bpsSum)}`,
+    });
+  }
+  // Treasury + masternode addresses are only required when the worker is
+  // enabled. The burn address has a canonical default derived in
+  // src/lib/burn-address.ts, so we don't require it here even when enabled.
+  if (cfg.BUYBACK_ENABLED) {
+    if (!cfg.FAIR_TREASURY_ADDRESS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["FAIR_TREASURY_ADDRESS"],
+        message:
+          "FAIR_TREASURY_ADDRESS is required when BUYBACK_ENABLED=true",
+      });
+    }
+    if (!cfg.FAIR_MASTERNODE_REWARD_ADDRESS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["FAIR_MASTERNODE_REWARD_ADDRESS"],
+        message:
+          "FAIR_MASTERNODE_REWARD_ADDRESS is required when BUYBACK_ENABLED=true",
+      });
+    }
+  }
+  // The masternode-reward booster reads the pool balance from
+  // FAIR_MASTERNODE_REWARD_ADDRESS via getreceivedbyaddress, so the address
+  // is mandatory when the worker is enabled even if the buy-back side is
+  // off. (Operator may pre-fund the pool manually before turning on
+  // buy-back.)
+  if (cfg.MASTERNODE_REWARDS_ENABLED && !cfg.FAIR_MASTERNODE_REWARD_ADDRESS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["FAIR_MASTERNODE_REWARD_ADDRESS"],
+      message:
+        "FAIR_MASTERNODE_REWARD_ADDRESS is required when MASTERNODE_REWARDS_ENABLED=true",
+    });
+  }
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

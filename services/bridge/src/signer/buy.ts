@@ -11,6 +11,7 @@ import { AuditLog } from "../models/audit-log.js";
 import { BuyOrder, type BuyOrderDoc } from "../models/buy-order.js";
 import { logger } from "../lib/logger.js";
 import { alert } from "../lib/alert.js";
+import { fairAddressToBytes } from "../lib/fair-address-bytes.js";
 import { deriveBuyPaymentKey } from "../hd/buy-payment.js";
 import { basePublic, baseChain, requireWallet } from "../rpc/base.js";
 import {
@@ -314,16 +315,6 @@ async function reconcileSwap(ctx: BuyContext): Promise<bigint> {
   }
   const wfairOut = await readWfairBalance(ctx.paymentKey.address);
   return wfairOut;
-}
-
-function fairAddressToBytes(address: string): `0x${string}` {
-  // bridgeBurn(amount, bytes faircoinAddress) — the FairCoin address is
-  // packed as raw UTF-8 bytes. base-watcher's decodeFaircoinAddressBytes
-  // mirrors this on the way back out.
-  const bytes = new TextEncoder().encode(address);
-  let hex = "";
-  for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
-  return `0x${hex}` as `0x${string}`;
 }
 
 async function executeBurn(

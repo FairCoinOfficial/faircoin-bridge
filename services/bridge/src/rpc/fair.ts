@@ -223,3 +223,62 @@ export async function getWalletBalanceSats(): Promise<bigint> {
   const balance = await fairRpc.call<number>("getbalance");
   return BigInt(Math.round(balance * 100_000_000));
 }
+
+/**
+ * Total FAIR received at `address` (whole FAIR, 8-decimal float as returned
+ * by the daemon). Used by the masternode reward worker to size the pool
+ * without relying on whole-wallet balance — the bridge wallet also holds
+ * deposit/hot-wallet UTXOs that must NOT be redistributed to masternodes.
+ *
+ * `minconf` defaults to 1 — funds must be at least one block deep so we
+ * don't try to spend an unconfirmed pool credit on the very next tick.
+ */
+export async function getReceivedByAddressSats(
+  address: string,
+  minconf = 1,
+): Promise<bigint> {
+  const fair = await fairRpc.call<number>("getreceivedbyaddress", [
+    address,
+    minconf,
+  ]);
+  // Multiply via integer math to avoid float drift: 0.1 * 1e8 === 10000000.0000000002.
+  // round() is safe because faircoind itself returns exactly 8 decimals.
+  return BigInt(Math.round(fair * 100_000_000));
+}
+
+/**
+ * Wire shape of a single entry returned by `masternodelist`. faircoind v3
+ * returns a top-level JSON ARRAY (not the object-map keyed by `txhash-outidx`
+ * found in modern Bitcoin-fork forks). Each entry has at minimum the
+ * collateral outpoint (`txhash`/`outidx`), the lifecycle `status` (we treat
+ * "ENABLED" as eligible for payouts) and the masternode's own FAIR address
+ * `addr` — that is the address we send the pro-rata reward to.
+ */
+const MasternodeListEntrySchema = z
+  .object({
+    rank: z.number().optional(),
+    txhash: z.string(),
+    outidx: z.number(),
+    status: z.string(),
+    addr: z.string(),
+    version: z.number().optional(),
+    lastseen: z.number().optional(),
+    activetime: z.number().optional(),
+    lastpaid: z.number().optional(),
+  })
+  .passthrough();
+
+const MasternodeListSchema = z.array(MasternodeListEntrySchema);
+
+export type MasternodeListEntry = z.infer<typeof MasternodeListEntrySchema>;
+
+/**
+ * Fetch the current masternode list from faircoind. The optional `filter`
+ * argument is a partial-match string the daemon applies against `txhash`,
+ * `status`, or `addr`; we leave it unset so callers receive the full set
+ * and can filter in TS (cleaner unit-tests, no daemon-version coupling).
+ */
+export async function getMasternodeList(): Promise<MasternodeListEntry[]> {
+  const raw = await fairRpc.call<unknown>("masternodelist", []);
+  return MasternodeListSchema.parse(raw);
+}
