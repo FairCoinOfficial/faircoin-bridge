@@ -8,7 +8,13 @@
 
 import "./setup-env.js";
 
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+// Shared FaircoinRpcClient mock (see test/mock-fair-rpc.ts). We dispatch
+// the few RPC calls the signer makes (`validateaddress`, `sendtoaddress`,
+// `getrawtransaction`) through the runtime-mutable handler so this file
+// composes with the rest of the suite under bun's process-wide mock cache.
+import { setRpcHandler, clearRpcHandler } from "./mock-fair-rpc.js";
+
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 
 interface FakeWithdrawalDoc {
   _id: { toString(): string };
@@ -114,23 +120,38 @@ mock.module("../src/lib/logger.js", () => ({
   },
 }));
 
-mock.module("../src/rpc/fair.js", () => ({
-  validateAddress: async () => {
-    counters.validateAddress += 1;
-    return { isvalid: true };
-  },
-  sendToAddress: async (): Promise<string> => {
-    counters.sendToAddress += 1;
-    return "fairtxid_broadcast_one";
-  },
-  getRawTransaction: async (): Promise<unknown> => {
-    counters.getRawTransaction += 1;
-    if (!txExistsOnNode) {
-      throw new Error("RPC -5: No such mempool or blockchain transaction");
-    }
-    return { txid: "fairtxid_broadcast_one", confirmations: 0 };
-  },
-}));
+// Route fair.ts through the shared FaircoinRpcClient mock by handler. We
+// also need to keep `validateaddress` answering with the schema-shaped
+// `{isvalid, address}` blob (validateAddress in fair.ts parses the raw
+// response with zod).
+function signerRpcHandler(
+  method: string,
+  _params: readonly unknown[],
+): Promise<unknown> {
+  switch (method) {
+    case "validateaddress":
+      counters.validateAddress += 1;
+      return Promise.resolve({ isvalid: true });
+    case "sendtoaddress":
+      counters.sendToAddress += 1;
+      return Promise.resolve("fairtxid_broadcast_one");
+    case "getrawtransaction":
+      counters.getRawTransaction += 1;
+      if (!txExistsOnNode) {
+        return Promise.reject(
+          new Error("RPC -5: No such mempool or blockchain transaction"),
+        );
+      }
+      return Promise.resolve({
+        txid: "fairtxid_broadcast_one",
+        confirmations: 0,
+      });
+    default:
+      return Promise.reject(
+        new Error(`signer-fair test: unmocked RPC method ${method}`),
+      );
+  }
+}
 
 const { signRelease } = await import("../src/signer/fair.js");
 
@@ -153,6 +174,7 @@ beforeEach(() => {
   };
   counters = { sendToAddress: 0, getRawTransaction: 0, validateAddress: 0 };
   txExistsOnNode = true;
+  setRpcHandler(signerRpcHandler);
 });
 
 describe("signRelease idempotency (node_wallet)", () => {
@@ -203,4 +225,12 @@ describe("signRelease idempotency (node_wallet)", () => {
     await expect(signRelease(job)).rejects.toThrow(/FAILED/);
     expect(counters.sendToAddress).toBe(0);
   });
+});
+
+afterAll(() => {
+  // Clear shared mock handler + restore module spies (audit-log, alert,
+  // logger). The dispatch class itself stays installed so later test files
+  // composes cleanly under bun's process-wide mock cache.
+  clearRpcHandler();
+  mock.restore();
 });

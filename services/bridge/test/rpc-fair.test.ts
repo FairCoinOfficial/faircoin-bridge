@@ -14,7 +14,13 @@
 
 import "./setup-env.js";
 
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+// Shared FaircoinRpcClient mock (see test/mock-fair-rpc.ts for rationale).
+// We install the dispatch class here so fair.ts's `export const fairRpc`
+// singleton is bound to it; per-test behaviour is configured by calling
+// `setRpcHandler(...)` in each `it` block via the local helper below.
+import { setRpcHandler, clearRpcHandler } from "./mock-fair-rpc.js";
+
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 
 interface RpcCall {
   method: string;
@@ -55,67 +61,78 @@ let blockHashByHeight: Map<number, string>;
 let blockByHash: Map<string, RawBlockFixture>;
 let txByTxid: Map<string, RawTxFixture | Error>;
 
-mock.module("@fairco.in/rpc-client", () => {
-  class FaircoinRpcClient {
-    constructor(_options: unknown) {
-      // no-op: configuration is irrelevant in mock mode
-    }
-    async call<T>(method: string, params: readonly unknown[] = []): Promise<T> {
-      calls.push({ method, params });
-      switch (method) {
-        case "getblockhash": {
-          const height = params[0];
-          if (typeof height !== "number") {
-            throw new Error("mock: getblockhash height must be a number");
-          }
-          const hash = blockHashByHeight.get(height);
-          if (hash === undefined) {
-            throw new Error(`mock: no block hash for height ${height}`);
-          }
-          return hash as T;
-        }
-        case "getblock": {
-          // faircoin v3 contract: 2nd arg MUST be a boolean.
-          if (typeof params[1] !== "boolean") {
-            throw new Error(
-              `mock: getblock 2nd arg must be boolean, got ${typeof params[1]}`,
-            );
-          }
-          const hash = params[0];
-          if (typeof hash !== "string") {
-            throw new Error("mock: getblock hash must be a string");
-          }
-          const block = blockByHash.get(hash);
-          if (!block) {
-            throw new Error(`mock: no block fixture for hash ${hash}`);
-          }
-          return block as T;
-        }
-        case "getrawtransaction": {
-          // faircoin v3 contract: 2nd arg MUST be numeric.
-          if (typeof params[1] !== "number") {
-            throw new Error(
-              `mock: getrawtransaction 2nd arg must be number, got ${typeof params[1]}`,
-            );
-          }
-          const txid = params[0];
-          if (typeof txid !== "string") {
-            throw new Error("mock: getrawtransaction txid must be a string");
-          }
-          const fixture = txByTxid.get(txid);
-          if (fixture === undefined) {
-            throw new Error(`mock: no tx fixture for txid ${txid}`);
-          }
-          if (fixture instanceof Error) throw fixture;
-          return fixture as T;
-        }
-        default:
-          throw new Error(`mock: unmocked RPC method ${method}`);
+function rpcHandler(
+  method: string,
+  params: readonly unknown[],
+): Promise<unknown> {
+  calls.push({ method, params });
+  switch (method) {
+    case "getblockhash": {
+      const height = params[0];
+      if (typeof height !== "number") {
+        return Promise.reject(
+          new Error("mock: getblockhash height must be a number"),
+        );
       }
+      const hash = blockHashByHeight.get(height);
+      if (hash === undefined) {
+        return Promise.reject(
+          new Error(`mock: no block hash for height ${String(height)}`),
+        );
+      }
+      return Promise.resolve(hash);
     }
+    case "getblock": {
+      // faircoin v3 contract: 2nd arg MUST be a boolean.
+      if (typeof params[1] !== "boolean") {
+        return Promise.reject(
+          new Error(
+            `mock: getblock 2nd arg must be boolean, got ${typeof params[1]}`,
+          ),
+        );
+      }
+      const hash = params[0];
+      if (typeof hash !== "string") {
+        return Promise.reject(
+          new Error("mock: getblock hash must be a string"),
+        );
+      }
+      const block = blockByHash.get(hash);
+      if (!block) {
+        return Promise.reject(
+          new Error(`mock: no block fixture for hash ${hash}`),
+        );
+      }
+      return Promise.resolve(block);
+    }
+    case "getrawtransaction": {
+      // faircoin v3 contract: 2nd arg MUST be numeric.
+      if (typeof params[1] !== "number") {
+        return Promise.reject(
+          new Error(
+            `mock: getrawtransaction 2nd arg must be number, got ${typeof params[1]}`,
+          ),
+        );
+      }
+      const txid = params[0];
+      if (typeof txid !== "string") {
+        return Promise.reject(
+          new Error("mock: getrawtransaction txid must be a string"),
+        );
+      }
+      const fixture = txByTxid.get(txid);
+      if (fixture === undefined) {
+        return Promise.reject(
+          new Error(`mock: no tx fixture for txid ${txid}`),
+        );
+      }
+      if (fixture instanceof Error) return Promise.reject(fixture);
+      return Promise.resolve(fixture);
+    }
+    default:
+      return Promise.reject(new Error(`mock: unmocked RPC method ${method}`));
   }
-  return { FaircoinRpcClient };
-});
+}
 
 const fairRpc = await import("../src/rpc/fair.js");
 
@@ -155,6 +172,7 @@ beforeEach(() => {
   blockHashByHeight = new Map();
   blockByHash = new Map();
   txByTxid = new Map();
+  setRpcHandler(rpcHandler);
 });
 
 describe("getBlockWithTxs (faircoin v3 verbosity workaround)", () => {
@@ -343,4 +361,11 @@ describe("getRawTransaction (faircoin v3 numeric verbose)", () => {
     expect(grtCall.params).toEqual(["lone-txid", 1]);
     expect(typeof grtCall.params[1]).toBe("number");
   });
+});
+
+afterAll(() => {
+  // Clear the RPC handler so a later test file's `setRpcHandler` (or none
+  // at all) takes effect cleanly. The shared dispatch class itself stays
+  // installed — that's intentional, see test/mock-fair-rpc.ts.
+  clearRpcHandler();
 });

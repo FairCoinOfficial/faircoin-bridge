@@ -63,34 +63,34 @@ mock.module("../src/lib/logger.js", () => ({
   },
 }));
 
-// Full fair.js surface — see masternode-reward-worker.test.ts for the
-// rationale (bun's mock cache is shared across test files).
-mock.module("../src/rpc/fair.js", () => ({
-  getReceivedByAddressSats: async () => {
+// FaircoinRpcClient mock is installed globally by test/mock-fair-rpc.ts.
+// We register a handler that COUNTS any RPC call so the assertions below
+// can verify the disabled flag short-circuits before the worker reaches
+// any wire call.
+import { setRpcHandler, clearRpcHandler } from "./mock-fair-rpc.js";
+
+setRpcHandler((method, params) => {
+  if (method === "getreceivedbyaddress") {
     calls.getReceivedByAddress += 1;
-    return 0n;
-  },
-  getMasternodeList: async () => {
+    return Promise.resolve(0);
+  }
+  if (method === "masternodelist") {
     calls.getMasternodeList += 1;
-    return [];
-  },
-  sendToAddress: async (address: string, amountFair: number) => {
-    calls.sends.push({ address, amountFair });
-    return "txid_should_never_happen";
-  },
-  getRawTransaction: async () => ({ txid: "x" }),
-  validateAddress: async () => ({ isvalid: true }),
-  getTipHeight: async () => 0,
-  getBlockAtHeight: async () => {
-    throw new Error("getBlockAtHeight not implemented in disabled test");
-  },
-  getBlockWithTxs: async () => {
-    throw new Error("getBlockWithTxs not implemented in disabled test");
-  },
-  sendRawTransaction: async () => "",
-  getWalletBalanceSats: async () => 0n,
-  fairRpc: { call: async () => undefined },
-}));
+    return Promise.resolve([]);
+  }
+  if (method === "sendtoaddress") {
+    const address = params[0];
+    const amount = params[1];
+    if (typeof address !== "string" || typeof amount !== "number") {
+      return Promise.reject(new Error("sendtoaddress mock: bad params"));
+    }
+    calls.sends.push({ address, amountFair: amount });
+    return Promise.resolve("txid_should_never_happen");
+  }
+  return Promise.reject(
+    new Error(`disabled-test mock: unexpected RPC method ${method}`),
+  );
+});
 
 const { runMasternodeRewardTick } = await import(
   "../src/workers/masternode-reward-worker.js"
@@ -107,7 +107,9 @@ describe("runMasternodeRewardTick — disabled flag", () => {
 });
 
 afterAll(() => {
-  // See the equivalent note in masternode-reward-worker.test.ts: restore the
-  // global mock registry so downstream test files see the real implementations.
+  // Restore the spy mocks (audit-log, alert, logger, config). The shared
+  // FaircoinRpcClient handler is cleared so a later test file can install
+  // its own without inheriting our counter side-effects.
+  clearRpcHandler();
   mock.restore();
 });

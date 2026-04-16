@@ -14,17 +14,34 @@
 
 import "./setup-env.js";
 
-// Set a sane default config for the worker so the parsed env is "rewards
-// enabled with a known reward address". Per-test overrides happen in
-// beforeEach; setup-env.ts ran above with the global defaults already.
-process.env.MASTERNODE_REWARDS_ENABLED = "true";
-process.env.MASTERNODE_REWARDS_INTERVAL_MS = "60000";
-process.env.MASTERNODE_REWARDS_MIN_BALANCE_FAIR = "10";
-process.env.MASTERNODE_REWARDS_PAYOUT_FEE_FAIR = "0.001";
-process.env.FAIR_MASTERNODE_REWARD_ADDRESS =
-  "FErMgtiwoX4zrmUi5MHY7iZ2qij32ckdDg";
+// Shared FaircoinRpcClient mock. Importing this side-effect module
+// installs a single global mock class with a runtime-mutable handler; we
+// install our handler in `beforeEach` below. Required because bun's test
+// runner caches both `@fairco.in/rpc-client` AND `src/rpc/fair.ts` across
+// files — so per-file `mock.module` registrations don't compose with
+// fair.ts's `export const fairRpc = new FaircoinRpcClient(...)` singleton.
+// See test/mock-fair-rpc.ts for the full rationale.
+import { setRpcHandler, clearRpcHandler } from "./mock-fair-rpc.js";
 
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+
+// Override config explicitly. setup-env.ts gives us a base parsed config,
+// but other test files (buyback-worker.test.ts) may run first and freeze
+// `config.MASTERNODE_REWARDS_ENABLED` to false in the process module
+// cache. We mock the config module to pin it to the values this test file
+// needs, regardless of file ordering.
+const { config: realConfig } = await import("../src/config.js");
+mock.module("../src/config.js", () => ({
+  config: {
+    ...realConfig,
+    MASTERNODE_REWARDS_ENABLED: true,
+    MASTERNODE_REWARDS_INTERVAL_MS: 60_000,
+    MASTERNODE_REWARDS_MIN_BALANCE_FAIR: 10,
+    MASTERNODE_REWARDS_PAYOUT_FEE_FAIR: 0.001,
+    FAIR_MASTERNODE_REWARD_ADDRESS:
+      "FErMgtiwoX4zrmUi5MHY7iZ2qij32ckdDg",
+  },
+}));
 
 interface FakePayoutSubdoc {
   masternodeOutpoint: string;
@@ -289,50 +306,55 @@ mock.module("../src/lib/logger.js", () => ({
   },
 }));
 
-// Mock the full fair.js surface. Bun's test runner shares mock state across
-// files in the same `bun test` invocation, so this mock must export every
-// symbol that any other test file imports (otherwise that test file will
-// see undefined exports). We add no-op stubs for the rest of the surface
-// (getBlockWithTxs, getBlockAtHeight, validateAddress, …) — they are not
-// invoked by the masternode worker but their presence keeps the other
-// tests' module-time `import` lookups happy.
-mock.module("../src/rpc/fair.js", () => ({
-  // Exercised by the masternode worker:
-  getReceivedByAddressSats: async (_addr: string, _minconf?: number) => {
-    state.rpcCalls.getReceivedByAddress += 1;
-    return state.poolReceivedSats;
-  },
-  getMasternodeList: async () => {
-    state.rpcCalls.getMasternodeList += 1;
-    return state.masternodes;
-  },
-  sendToAddress: async (address: string, amountFair: number) => {
-    state.rpcCalls.sendToAddress.push({ address, amountFair });
-    const seq = state.rpcCalls.sendToAddress.length;
-    return `txid_send_${String(seq)}`;
-  },
-  getRawTransaction: async (txid: string) => {
-    state.rpcCalls.getRawTransaction.push(txid);
-    if (!state.txExistsOnNode) {
-      throw new Error("RPC -5: No such mempool or blockchain transaction");
+// Per-tick RPC handler. Routes every faircoind call this worker can make
+// into the in-memory `state` fixture. Shared FaircoinRpcClient mock is
+// installed in test/mock-fair-rpc.ts.
+function workerRpcHandler(
+  method: string,
+  params: readonly unknown[],
+): Promise<unknown> {
+  switch (method) {
+    case "getreceivedbyaddress": {
+      state.rpcCalls.getReceivedByAddress += 1;
+      // sats → FAIR float (mirror of fair.ts's reverse conversion).
+      const sats = state.poolReceivedSats;
+      return Promise.resolve(Number(sats) / 1e8);
     }
-    return { txid, confirmations: 0 };
-  },
-  // Cross-test surface (other tests rely on these being present even if we
-  // don't drive them ourselves). Keep behaviour intentionally simple so
-  // accidental invocation is loud.
-  validateAddress: async () => ({ isvalid: true }),
-  getTipHeight: async () => 0,
-  getBlockAtHeight: async () => {
-    throw new Error("getBlockAtHeight not implemented in masternode-reward worker test");
-  },
-  getBlockWithTxs: async () => {
-    throw new Error("getBlockWithTxs not implemented in masternode-reward worker test");
-  },
-  sendRawTransaction: async () => "",
-  getWalletBalanceSats: async () => 0n,
-  fairRpc: { call: async () => undefined },
-}));
+    case "masternodelist": {
+      state.rpcCalls.getMasternodeList += 1;
+      return Promise.resolve(state.masternodes);
+    }
+    case "sendtoaddress": {
+      const address = params[0];
+      const amount = params[1];
+      if (typeof address !== "string" || typeof amount !== "number") {
+        return Promise.reject(new Error("sendtoaddress mock: bad params"));
+      }
+      state.rpcCalls.sendToAddress.push({ address, amountFair: amount });
+      const seq = state.rpcCalls.sendToAddress.length;
+      return Promise.resolve(`txid_send_${String(seq)}`);
+    }
+    case "getrawtransaction": {
+      const txid = params[0];
+      if (typeof txid !== "string") {
+        return Promise.reject(
+          new Error("getrawtransaction mock: txid must be string"),
+        );
+      }
+      state.rpcCalls.getRawTransaction.push(txid);
+      if (!state.txExistsOnNode) {
+        return Promise.reject(
+          new Error("RPC -5: No such mempool or blockchain transaction"),
+        );
+      }
+      return Promise.resolve({ txid, confirmations: 0 });
+    }
+    default:
+      return Promise.reject(
+        new Error(`mock FaircoinRpcClient: unmocked method ${method}`),
+      );
+  }
+}
 
 const { runMasternodeRewardTick, __test__ } = await import(
   "../src/workers/masternode-reward-worker.js"
@@ -354,13 +376,15 @@ function resetState(): void {
 
 beforeEach(() => {
   resetState();
+  setRpcHandler(workerRpcHandler);
 });
 
-// Bun's `mock.module` mutates a process-global module map. If we leave our
-// mocks in place when this file finishes, subsequent test files (which load
-// the same module paths but expect a different export shape) see the wrong
-// implementation. Restore on teardown so the suite is order-independent.
+// Bun's `mock.module` mutates a process-global module map. Spy-style mocks
+// (audit-log, alert, logger) get cleared by mock.restore() to avoid leaking
+// behaviours into the next file; the FaircoinRpcClient handler is cleared
+// explicitly so a later test file can install its own without surprises.
 afterAll(() => {
+  clearRpcHandler();
   mock.restore();
 });
 

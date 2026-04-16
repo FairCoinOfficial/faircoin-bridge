@@ -30,7 +30,7 @@ process.env.FAIR_BURN_ADDRESS = "F111111111111111111111111111111eLe";
 process.env.BRIDGE_EOA_PRIVATE_KEY =
   "0x0000000000000000000000000000000000000000000000000000000000000001";
 
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 
 interface FakeCycleDoc {
   _id: { toString(): string };
@@ -175,24 +175,23 @@ mock.module("../src/lib/logger.js", () => ({
   },
 }));
 
-// Note: bun's mock.module is GLOBAL (not file-scoped). To avoid leaking a
-// partial mock that breaks other test files, we re-export every named symbol
-// the rest of the test suite consumes from these modules — even those this
-// file does not exercise.
-mock.module("../src/rpc/fair.js", () => ({
-  validateAddress: async (): Promise<{ isvalid: boolean }> => ({
-    isvalid: true,
-  }),
-  sendToAddress: async (): Promise<string> => "stub-not-used-by-this-test",
-  getRawTransaction: async (): Promise<unknown> => ({ txid: "stub" }),
-  getReceivedByAddressSats: async (): Promise<bigint> => 0n,
-  getMasternodeList: async (): Promise<unknown[]> => [],
-  getWalletBalanceSats: async (): Promise<bigint> => 0n,
-  getBlockAtHeight: async (): Promise<unknown> => ({}),
-  getBlockWithTxs: async (): Promise<unknown> => ({}),
-  getTipHeight: async (): Promise<number> => 0,
-  sendRawTransaction: async (): Promise<string> => "stub",
-}));
+// FaircoinRpcClient mock is installed globally by test/mock-fair-rpc.ts.
+// Per-test handler routes the few RPC calls the buy-back worker can make
+// (only `validateaddress` for the destination addresses today). Other
+// methods return loud errors so accidental coupling to fair-side state
+// surfaces immediately.
+import { setRpcHandler, clearRpcHandler } from "./mock-fair-rpc.js";
+
+setRpcHandler((method) => {
+  switch (method) {
+    case "validateaddress":
+      return Promise.resolve({ isvalid: true });
+    default:
+      return Promise.reject(
+        new Error(`buyback-worker test: unmocked RPC method ${method}`),
+      );
+  }
+});
 
 mock.module("../src/rpc/uniswap.js", () => ({
   // Pretend pool rate: 1 USDC = 10 WFAIR. Inputs are microUSDC (6 dec); we
@@ -484,4 +483,12 @@ describe("lastWriteCall is a state leak guard", () => {
     // The last write of a full cycle must be the masternode bridgeBurn.
     expect(lastWriteCall?.functionName).toBe("bridgeBurn");
   });
+});
+
+afterAll(() => {
+  // Restore spies (audit-log, alert, logger, viem, models). The shared
+  // FaircoinRpcClient handler is cleared so a later test file installs its
+  // own without inheriting our `validateaddress → {isvalid:true}` stub.
+  clearRpcHandler();
+  mock.restore();
 });
