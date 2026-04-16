@@ -1,0 +1,16 @@
+{
+  "base_mainnet": {
+    "chainId": 8453,
+    "wfair": {
+      "address": "0xF2853CedDF47A05Fee0B4b24DFf2925d59737fb3",
+      "admin": "0xee8b8B9B7CFF6cDb51DA8f92a511005859007521",
+      "minter": "0xee8b8B9B7CFF6cDb51DA8f92a511005859007521",
+      "pauser": "0xee8b8B9B7CFF6cDb51DA8f92a511005859007521",
+      "deployedAt": "2026-04-16",
+      "basescan": "https://basescan.org/address/0xF2853CedDF47A05Fee0B4b24DFf2925d59737fb3",
+      "verified": true,
+      "safe": null,
+      "note": "Solo EOA mode (no Safe). TVL-capped launch. Roles can be transferred to a Safe later via grantRole + renounceRole."
+    }
+  }
+}
