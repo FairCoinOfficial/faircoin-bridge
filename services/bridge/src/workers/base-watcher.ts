@@ -17,7 +17,12 @@ import { validateAddress } from "../rpc/fair.js";
 import { wfairAbi } from "../rpc/wfair-abi.js";
 
 const TICK_MS = 5000;
-const INITIAL_BACKFILL_BLOCKS = 10_000n;
+// Fresh bridge: no historical WFAIR burns to recover, so we only look back a
+// short window on first run instead of scanning thousands of blocks.
+const INITIAL_BACKFILL_BLOCKS = 50n;
+// Free-tier Base RPC providers (e.g. Alchemy) cap `eth_getLogs` at a 10-block
+// range, so scan the (from, safeTip] window in chunks no larger than this.
+const MAX_LOG_RANGE = 10n;
 const SATS_TO_WEI = 10_000_000_000n; // 1e10
 const BPS_DENOM = 10_000n;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -276,23 +281,30 @@ export async function startBaseWatcher(signal: AbortSignal): Promise<void> {
       const safeTip = tip - BigInt(config.BASE_CONFIRMATIONS);
 
       if (safeTip > last) {
-        const fromBlock = last + 1n;
-        const toBlock = safeTip;
-        const logs = await basePublic.getLogs({
-          address: config.WFAIR_CONTRACT_ADDRESS as `0x${string}`,
-          event: bridgeBurnEvent,
-          fromBlock,
-          toBlock,
-        });
-        for (const log of logs) {
-          if (signal.aborted) break;
-          await processLog(log);
+        // Scan (last, safeTip] in <=MAX_LOG_RANGE-block windows so the query
+        // stays within free-tier getLogs limits, persisting the cursor after
+        // each window so progress survives a restart mid-backfill.
+        let windowFrom = last + 1n;
+        while (windowFrom <= safeTip && !signal.aborted) {
+          const windowEnd = windowFrom + MAX_LOG_RANGE - 1n;
+          const windowTo = windowEnd > safeTip ? safeTip : windowEnd;
+          const logs = await basePublic.getLogs({
+            address: config.WFAIR_CONTRACT_ADDRESS as `0x${string}`,
+            event: bridgeBurnEvent,
+            fromBlock: windowFrom,
+            toBlock: windowTo,
+          });
+          for (const log of logs) {
+            if (signal.aborted) break;
+            await processLog(log);
+          }
+          await EventCursor.updateOne(
+            { _id: "base" },
+            { $set: { lastProcessedBlock: Number(windowTo) } },
+            { upsert: true },
+          );
+          windowFrom = windowTo + 1n;
         }
-        await EventCursor.updateOne(
-          { _id: "base" },
-          { $set: { lastProcessedBlock: Number(safeTip) } },
-          { upsert: true },
-        );
       }
     } catch (err: unknown) {
       logger.error({ err }, "base-watcher tick error");
