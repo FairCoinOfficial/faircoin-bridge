@@ -14,12 +14,12 @@ If you find a security issue, please email `security@fairco.in` before disclosin
 
 WFAIR is a 1:1 wrapped representation of FairCoin (FAIR) on Base. A user deposits FAIR to a bridge-controlled FairCoin address; after confirmation, the bridge mints an equivalent amount of WFAIR (minus a small bridge fee) to the user's Base address. Burning WFAIR on Base triggers a FAIR withdrawal from the bridge's FairCoin hot wallet to the user's FAIR address.
 
-The bridge is **custodial** and **centralized**: FAIR reserves are held by the bridge operator, and WFAIR minting is controlled by a Safe multisig on Base. This is not a trust-minimized bridge — it trades trustlessness for simplicity, speed of shipping, and a clean user experience.
+The bridge is **custodial** and **centralized**: FAIR reserves are held by the bridge operator, and WFAIR minting is controlled by the operator's admin/minter EOA on Base. Production currently runs in **solo-EOA** mode (`MINT_AUTH_MODE=direct_eoa`) — a single EOA holds admin/minter/pauser and mints directly; a Safe multisig owner is a supported but not-yet-wired upgrade. This is not a trust-minimized bridge — it trades trustlessness for simplicity, speed of shipping, and a clean user experience.
 
 ## Architecture
 
 - **FairCoin side**: watch-only HD xpub per-user deposit addresses (BIP44 path `m/44'/119'/0'/0`), `faircoin-cli`/RPC to detect confirmed deposits, a hot wallet (capped at 5% of TVL) to fund withdrawals, with the remainder in cold storage.
-- **Base side**: `WFAIR` ERC-20 contract with a Safe multisig owner. The bridge service proposes mint/burn-release transactions to Safe Transaction Service; signers co-sign; Safe executes.
+- **Base side**: `WFAIR` ERC-20 contract (OZ AccessControl + Pausable). In production (solo-EOA) the bridge's admin/minter EOA holds `MINTER_ROLE` and mints directly via `viem`. A `safe_proposal` mode (propose to Safe Transaction Service, signers co-sign, Safe executes) is supported for a future multisig upgrade.
 - **Bridge service** (`services/bridge`): a Bun/Node process running Express (public API), BullMQ workers (deposit watcher, mint proposer, burn watcher, withdrawal signer), MongoDB for state, Redis for queues. Uses `viem` for Base RPC, `@safe-global/protocol-kit` + `api-kit` for Safe interactions, `pino` for logging.
 - **Contracts** (`contracts/`): Foundry project for the `WFAIR` ERC-20, TVL-cap enforcement, and deployment scripts. Initialized in a later step.
 
