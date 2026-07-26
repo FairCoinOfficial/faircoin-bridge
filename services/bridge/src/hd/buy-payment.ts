@@ -25,6 +25,18 @@ import { HdState } from "../models/hd-state.js";
 
 let cachedRoot: HDKey | null = null;
 
+/**
+ * Whether a buy-payment HD root is configured at all.
+ *
+ * Both env vars are optional, so the service boots fine without either — and
+ * then every non-card buy fails at request time with a 503 the user cannot act
+ * on. Exposed so startup and `/health` can report the gap to operators instead
+ * of leaving it to be discovered by a customer trying to pay.
+ */
+export function isBuyPaymentHdConfigured(): boolean {
+  return Boolean(config.BUY_PAYMENT_HD_XPRV ?? config.BUY_PAYMENT_HD_MNEMONIC);
+}
+
 function getBuyPaymentRoot(): HDKey {
   if (cachedRoot) return cachedRoot;
   if (config.BUY_PAYMENT_HD_XPRV) {

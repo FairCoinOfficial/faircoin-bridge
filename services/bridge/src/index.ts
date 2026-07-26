@@ -25,9 +25,20 @@ import {
   startReleaseWorker,
 } from "./workers/orchestrator.js";
 import { startReservesSnapshot } from "./workers/reserves-snapshot.js";
+import { isBuyPaymentHdConfigured } from "./hd/buy-payment.js";
 
 async function main(): Promise<void> {
   logger.info({ env: config.NODE_ENV }, "faircoin-bridge starting");
+
+  // Not fatal: the bridge still handles deposits, mints and releases without a
+  // buy-payment HD root. But every non-card buy will 503, so this has to be
+  // visible at boot rather than only in a failed customer order.
+  if (!isBuyPaymentHdConfigured()) {
+    logger.error(
+      "BUY DISABLED: neither BUY_PAYMENT_HD_XPRV nor BUY_PAYMENT_HD_MNEMONIC is set — /api/buy/quote will return 503 address_allocation_failed for every non-card order",
+    );
+  }
+
   await connectMongo();
 
   const redis = getRedis();
