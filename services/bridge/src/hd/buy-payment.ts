@@ -92,6 +92,14 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 export async function allocateNextBuyPaymentAddress(): Promise<DerivedBuyPaymentKey> {
+  // Resolve the root BEFORE burning an index. The counter is a persisted
+  // `$inc`, so deriving after it means an unconfigured (or unreadable) root
+  // consumes an index on every failed attempt: the live bridge reached
+  // nextIndex 14 without a single order existing, one per 503 a user hit.
+  // Gaps are harmless to correctness, but they turn a config error into silent
+  // state drift and make the counter useless as a count of real allocations.
+  getBuyPaymentRoot();
+
   const updated = await HdState.findOneAndUpdate(
     { _id: "base_buy_payment" },
     { $inc: { nextIndex: 1 } },
