@@ -22,3 +22,25 @@ export function redactRpcUrls(text: string): string {
     "$1<redacted>",
   );
 }
+
+/**
+ * Scrub every field of a serialised error that can carry an endpoint.
+ *
+ * viem spreads the URL across `message`, `shortMessage`, `details`, `stack`
+ * and `metaMessages`, so censoring the `url` property alone leaves a working
+ * key in the log line. Applied as a pino `err` serializer, which is the only
+ * seam that sees the whole error — a `formatters.log` hook does not, because
+ * `logger.error({ err }, "msg")` puts nothing at the record's top level.
+ */
+export function redactErrorFields(value: unknown): unknown {
+  if (typeof value === "string") return redactRpcUrls(value);
+  if (Array.isArray(value)) return value.map(redactErrorFields);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = redactErrorFields(inner);
+    }
+    return out;
+  }
+  return value;
+}

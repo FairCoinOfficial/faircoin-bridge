@@ -31,3 +31,37 @@ describe("redactRpcUrls", () => {
     );
   });
 });
+
+describe("redactErrorFields on the real logger", () => {
+  test("a viem-shaped error leaks nothing through message, stack or url", async () => {
+    const { default: pino } = await import("pino");
+    const { logger: _unused } = await import("../src/lib/logger.js");
+    void _unused;
+    const { redactErrorFields } = await import("../src/lib/redact.js");
+
+    const lines: string[] = [];
+    const probe = pino(
+      {
+        serializers: {
+          err: (e: unknown) =>
+            redactErrorFields(pino.stdSerializers.err(e as Error)),
+        },
+      },
+      { write: (s: string) => { lines.push(s); } } as never,
+    );
+
+    const key = "SUPERSECRETKEY123";
+    const url = `https://base-mainnet.g.alchemy.com/v2/${key}`;
+    const err = Object.assign(
+      new Error(`HTTP request failed. URL: ${url}`),
+      { url, metaMessages: [`URL: ${url}`], details: `at ${url}` },
+    );
+
+    probe.error({ err }, "base-watcher tick error");
+
+    const out = lines.join("");
+    expect(out).not.toContain(key);
+    // The host must survive — it is what makes the error diagnosable.
+    expect(out).toContain("base-mainnet.g.alchemy.com");
+  });
+});

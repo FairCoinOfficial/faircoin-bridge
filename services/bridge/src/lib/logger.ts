@@ -1,37 +1,34 @@
 import pino from "pino";
-import { redactRpcUrls } from "./redact.js";
+import { redactErrorFields, redactRpcUrls } from "./redact.js";
 
 /**
- * Paths that must never reach the log, whatever object is passed in.
+ * Logger for the bridge, with provider credentials scrubbed.
  *
- * viem embeds the full RPC endpoint in its error messages and metadata — a
- * single Alchemy 429 wrote the provider URL, API key and all, straight into
- * the journal on every failed tick. Anyone with log access (or a log shipper,
- * or a pasted stack trace in a chat) picks up a working key.
+ * viem embeds the full RPC endpoint — API key included — in its error
+ * `message`, `stack`, `details` and `metaMessages`, and the watchers log the
+ * error object wholesale. A single provider 429 therefore wrote a working key
+ * into the journal on every tick.
  *
- * Redaction is by path rather than by scrubbing message text: `err.message`
- * has to stay readable to be useful, so the URL-bearing fields are censored
- * individually and the message is rewritten by `redactRpcUrls` at the call
- * sites that log provider errors.
+ * The scrubbing hangs off `serializers.err` rather than `redact` paths or a
+ * `formatters.log` hook. Both of those were tried and neither works here:
+ * `redact` only censors named paths, so `err.message` and `err.stack` sail
+ * through, and `formatters.log` never sees the error at all because
+ * `logger.error({ err }, "msg")` leaves the record's top level empty. The
+ * serializer is the one seam handed the whole error object.
  */
-const REDACTED_PATHS = [
-  "err.url",
-  "err.metaMessages",
-  "*.url",
-  "url",
-];
-
 export const logger = pino({
   level: process.env.LOG_LEVEL ?? "info",
-  redact: { paths: REDACTED_PATHS, censor: "<redacted>" },
+  serializers: {
+    err: (err: unknown) => redactErrorFields(pino.stdSerializers.err(err as Error)),
+  },
   formatters: {
+    // Covers the rarer `logger.error("… https://host/v2/key …")` shape, where
+    // the endpoint is in the message rather than in an error object.
     log(object) {
-      // Catch URLs that arrive inside an error message rather than a field.
       const message = (object as { message?: unknown }).message;
-      if (typeof message === "string") {
-        return { ...object, message: redactRpcUrls(message) };
-      }
-      return object;
+      return typeof message === "string"
+        ? { ...object, message: redactRpcUrls(message) }
+        : object;
     },
   },
 });
