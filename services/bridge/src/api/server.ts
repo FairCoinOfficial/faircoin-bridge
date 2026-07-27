@@ -11,7 +11,7 @@ import { adminRouter } from "./admin.js";
 import { buyRouter } from "./buy.js";
 import { depositRouter } from "./deposit.js";
 import { errorHandler, notFoundHandler } from "./errors.js";
-import { healthRoute } from "./health.js";
+import { healthRoute, buyHealthRoute } from "./health.js";
 import { reservesRouter } from "./reserves.js";
 import { withdrawalRouter } from "./withdrawal.js";
 
@@ -59,6 +59,7 @@ export async function startApi(): Promise<http.Server> {
     next();
   });
 
+  app.get("/health/buy", buyHealthRoute);
   app.get("/health", (req, res, next) => {
     healthRoute(req, res).catch(next);
   });

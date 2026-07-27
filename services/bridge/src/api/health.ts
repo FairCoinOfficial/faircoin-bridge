@@ -31,3 +31,21 @@ export async function healthRoute(
   const ok = mongoOk && redisOk;
   res.status(ok ? 200 : 503).json({ ok, uptimeSec, mongoOk, redisOk, buyOk });
 }
+
+/**
+ * Buy-specific liveness, for uptime probes that can only read a status code.
+ *
+ * `/health` deliberately keeps `ok` true when only the buy flow is broken —
+ * deposits, mints and releases carry on, so the bridge is degraded, not down,
+ * and paging on it would train operators to ignore the alert. The cost of that
+ * choice is that a plain HTTP probe cannot see a buy outage at all, which is
+ * exactly how buying stayed dead without anyone noticing.
+ *
+ * This endpoint closes that gap: 200 while buy can allocate a payment address,
+ * 503 the moment it cannot. Point a monitor at it separately from `/health` so
+ * the two failure modes stay distinguishable.
+ */
+export function buyHealthRoute(_req: Request, res: Response): void {
+  const buyOk = isBuyPaymentHdConfigured();
+  res.status(buyOk ? 200 : 503).json({ ok: buyOk, buyOk });
+}
