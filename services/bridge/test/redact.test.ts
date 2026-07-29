@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { redactRpcUrls } from "../src/lib/redact.js";
+import { redactConnectionUrl, redactRpcUrls } from "../src/lib/redact.js";
 
 describe("redactRpcUrls", () => {
   test("strips the key from an Alchemy endpoint but keeps the host", () => {
@@ -63,5 +63,32 @@ describe("redactErrorFields on the real logger", () => {
     expect(out).not.toContain(key);
     // The host must survive — it is what makes the error diagnosable.
     expect(out).toContain("base-mainnet.g.alchemy.com");
+  });
+});
+
+describe("redactConnectionUrl", () => {
+  test("strips credentials from a mongo URI, keeping host and database", () => {
+    const out = redactConnectionUrl(
+      "mongodb://bridge:hunter2@127.0.0.1:27017/faircoin-bridge?authSource=admin",
+      "mongo://[unparseable-uri]",
+    );
+    expect(out).not.toContain("hunter2");
+    expect(out).toContain("127.0.0.1:27017");
+    expect(out).toContain("faircoin-bridge");
+  });
+
+  test("leaves a credential-free URL intact", () => {
+    const url = "redis://127.0.0.1:6379";
+    expect(redactConnectionUrl(url, "redis://[unparseable-url]")).toContain(
+      "127.0.0.1:6379",
+    );
+  });
+
+  test("returns the fallback rather than echoing an unparseable value", () => {
+    // A malformed string may still carry the password, so it must never be
+    // returned as-is.
+    expect(
+      redactConnectionUrl("mongodb://bridge:hunter2@:::bad", "mongo://[bad]"),
+    ).toBe("mongo://[bad]");
   });
 });

@@ -1,6 +1,7 @@
 import IORedis, { type Redis } from "ioredis";
 import { config } from "../config.js";
 import { logger } from "./logger.js";
+import { redactConnectionUrl } from "./redact.js";
 
 let client: Redis | null = null;
 
@@ -13,7 +14,7 @@ export function getRedis(): Redis {
     lazyConnect: false,
   });
   instance.on("connect", () => {
-    logger.info({ url: redactUrl(config.REDIS_URL) }, "redis connected");
+    logger.info({ url: redactConnectionUrl(config.REDIS_URL, "redis://[unparseable-url]") }, "redis connected");
   });
   instance.on("error", (err: unknown) => {
     logger.error({ err }, "redis error");
@@ -23,15 +24,4 @@ export function getRedis(): Redis {
   });
   client = instance;
   return instance;
-}
-
-function redactUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    if (parsed.password) parsed.password = "***";
-    if (parsed.username) parsed.username = "***";
-    return parsed.toString();
-  } catch {
-    return "redis://[unparseable-url]";
-  }
 }

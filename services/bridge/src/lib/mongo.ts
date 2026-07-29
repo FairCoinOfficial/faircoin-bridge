@@ -6,6 +6,7 @@ import { Deposit } from "../models/deposit.js";
 import { MasternodeRewardCycle } from "../models/masternode-reward-cycle.js";
 import { Withdrawal } from "../models/withdrawal.js";
 import { logger } from "./logger.js";
+import { redactConnectionUrl } from "./redact.js";
 
 let connected = false;
 
@@ -15,7 +16,7 @@ export async function connectMongo(): Promise<typeof mongoose> {
   const autoIndex = config.NODE_ENV !== "production";
 
   mongoose.connection.on("connected", () => {
-    logger.info({ uri: redactUri(config.MONGO_URI) }, "mongo connected");
+    logger.info({ uri: redactConnectionUrl(config.MONGO_URI, "mongo://[unparseable-uri]") }, "mongo connected");
   });
   mongoose.connection.on("disconnected", () => {
     logger.warn("mongo disconnected");
@@ -115,16 +116,5 @@ async function ensureCriticalIndexes(): Promise<void> {
         "failed to ensure indexes (custodial integrity at risk)",
       );
     }
-  }
-}
-
-function redactUri(uri: string): string {
-  try {
-    const parsed = new URL(uri);
-    if (parsed.password) parsed.password = "***";
-    if (parsed.username) parsed.username = "***";
-    return parsed.toString();
-  } catch {
-    return "mongo://[unparseable-uri]";
   }
 }

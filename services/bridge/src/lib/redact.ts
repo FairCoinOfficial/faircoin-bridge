@@ -44,3 +44,23 @@ export function redactErrorFields(value: unknown): unknown {
   }
   return value;
 }
+
+/**
+ * Strip the credentials from a connection URL, keeping it recognisable.
+ *
+ * Used for the connection strings the bridge logs on startup (`MONGO_URI`,
+ * `REDIS_URL`), which embed `user:password@`.
+ *
+ * @param fallback returned when the value does not parse as a URL — never the
+ *   input, which could be a malformed string still containing the password.
+ */
+export function redactConnectionUrl(url: string, fallback: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) parsed.password = "***";
+    if (parsed.username) parsed.username = "***";
+    return parsed.toString();
+  } catch {
+    return fallback;
+  }
+}
